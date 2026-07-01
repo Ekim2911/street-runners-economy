@@ -1,0 +1,179 @@
+const express = require('express');
+const cors = require('cors');
+const { DatabaseSync } = require('node:sqlite'); // built-in; needs Node >= 22.5
+const fs = require('fs');
+const path = require('path');
+
+const PORT = process.env.PORT || 3000;
+const API_KEY = process.env.ECONOMY_API_KEY || '';
+const STARTING_BALANCE = 5000;
+// The Lua lives next to server.js by default. On a host with an ephemeral
+// filesystem (e.g. Railway) point DB_PATH at a mounted volume so the SQLite
+// file survives redeploys/restarts.
+const SCRIPT_TEMPLATE_PATH = process.env.SCRIPT_PATH || path.join(__dirname, 'street_runners_missions.lua');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'economy.db');
+const STEAM_ID_PLACEHOLDER = '__STEAM_ID__';
+const STEAM_ID_PATTERN = /^\d{15,20}$/;
+const PUBLIC_PATHS = new Set(['/health', '/script.lua']);
+
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+const db = new DatabaseSync(DB_PATH);
+db.exec('PRAGMA journal_mode = WAL;');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS players (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT 'Runner',
+    title TEXT NOT NULL DEFAULT '',
+    balance INTEGER NOT NULL DEFAULT ${STARTING_BALANCE},
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS drift_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_id TEXT NOT NULL,
+    zone_name TEXT NOT NULL,
+    player_id TEXT NOT NULL,
+    player_name TEXT NOT NULL,
+    score REAL NOT NULL,
+    combo_max REAL NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_drift_runs_zone_player
+    ON drift_runs (zone_id, player_id, score DESC);
+`);
+
+// Upgrade path for databases created before the `title` column existed.
+try {
+  db.exec("ALTER TABLE players ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+} catch (e) {
+  // already has the column
+}
+
+const getPlayer = db.prepare('SELECT id, name, title, balance FROM players WHERE id = ?');
+const insertPlayer = db.prepare(
+  'INSERT INTO players (id, name, title, balance, updated_at) VALUES (?, ?, ?, ?, ?)'
+);
+const updatePlayer = db.prepare(
+  'UPDATE players SET balance = ?, name = ?, title = ?, updated_at = ? WHERE id = ?'
+);
+const topCash = db.prepare('SELECT name, title, balance FROM players ORDER BY balance DESC LIMIT ?');
+const insertDriftRun = db.prepare(`
+  INSERT INTO drift_runs (zone_id, zone_name, player_id, player_name, score, combo_max, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+// Best single run per player for a zone, ranked descending.
+const zoneLeaderboard = db.prepare(`
+  SELECT player_name AS playerName, MAX(score) AS score, MAX(combo_max) AS comboMax
+  FROM drift_runs
+  WHERE zone_id = ?
+  GROUP BY player_id
+  ORDER BY score DESC
+  LIMIT ?
+`);
+
+// Clamp a client-supplied limit to a sane range. Guards against a negative
+// value, which SQLite would treat as "no limit" and dump the whole table.
+function parseLimit(raw) {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 1) return 10;
+  return Math.min(50, n);
+}
+
+function ensurePlayer(id, name, title) {
+  let player = getPlayer.get(id);
+  if (!player) {
+    insertPlayer.run(id, name || 'Runner', title || '', STARTING_BALANCE, Date.now());
+    player = getPlayer.get(id);
+  }
+  return player;
+}
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+if (API_KEY) {
+  app.use((req, res, next) => {
+    // /script.lua is fetched directly by the game client (via AssettoServer's
+    // csp_extra_options.ini SCRIPT= line), which can't attach custom headers,
+    // so it — like /health — can't be gated behind the shared secret.
+    if (PUBLIC_PATHS.has(req.path)) return next();
+    if (req.get('x-economy-key') !== API_KEY) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    next();
+  });
+}
+
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+// Serves the mission script with the requesting player's real Steam64 id
+// baked in, when AssettoServer's SCRIPT line uses the {SteamID} placeholder:
+//   SCRIPT = "http://<host>:3000/script.lua?steamid={SteamID}"
+// AssettoServer substitutes {SteamID} per connecting client before the
+// client's CSP fetches this URL, so the id in the query string reflects the
+// actual authenticated Steam connection, not something the player can pick
+// by editing their own client config.
+app.get('/script.lua', (req, res) => {
+  let template;
+  try {
+    template = fs.readFileSync(SCRIPT_TEMPLATE_PATH, 'utf8');
+  } catch (e) {
+    return res.status(500).send('-- street_runners_missions.lua not found next to the economy server');
+  }
+  const raw = String(req.query.steamid || '').trim();
+  const steamId = STEAM_ID_PATTERN.test(raw) ? raw : '';
+  const script = template.split(STEAM_ID_PLACEHOLDER).join(steamId);
+  res.set('Content-Type', 'text/plain; charset=utf-8');
+  res.set('Cache-Control', 'no-store');
+  res.send(script);
+});
+
+app.get('/players/:id', (req, res) => {
+  const player = ensurePlayer(req.params.id, req.query.name, req.query.title);
+  res.json(player);
+});
+
+app.post('/players/:id/earn', (req, res) => {
+  const { amount, name, title } = req.body || {};
+  if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+    return res.status(400).json({ error: 'amount must be a number' });
+  }
+  const player = ensurePlayer(req.params.id, name, title);
+  const newBalance = player.balance + Math.round(amount);
+  const newName = name || player.name;
+  const newTitle = title !== undefined ? title : player.title;
+  updatePlayer.run(newBalance, newName, newTitle, Date.now(), req.params.id);
+  res.json({ id: req.params.id, name: newName, title: newTitle, balance: newBalance });
+});
+
+app.get('/leaderboard/cash', (req, res) => {
+  res.json(topCash.all(parseLimit(req.query.limit)));
+});
+
+app.post('/drift/runs', (req, res) => {
+  const { zoneId, zoneName, playerId, playerName, score, comboMax } = req.body || {};
+  if (!zoneId || !playerId || typeof score !== 'number') {
+    return res.status(400).json({ error: 'zoneId, playerId, and numeric score are required' });
+  }
+  insertDriftRun.run(
+    zoneId,
+    zoneName || zoneId,
+    playerId,
+    playerName || 'Runner',
+    score,
+    comboMax || 1,
+    Date.now()
+  );
+  res.status(201).json({ ok: true });
+});
+
+app.get('/drift/leaderboard/:zoneId', (req, res) => {
+  res.json(zoneLeaderboard.all(req.params.zoneId, parseLimit(req.query.limit)));
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Street Runners economy server listening on :${PORT}`);
+});

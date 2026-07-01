@@ -1,0 +1,5 @@
+node_modules/
+economy.db
+economy.db-journal
+economy.db-wal
+economy.db-shm
