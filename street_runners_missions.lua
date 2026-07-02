@@ -448,6 +448,77 @@ local function editorCopyZone()
 end
 
 ---------------------------------------------------------------------------
+-- Keyboard controls
+---------------------------------------------------------------------------
+-- The online-script UI overlay renders but doesn't receive mouse clicks on
+-- many CSP builds, so the editor is driven by hotkeys read here instead.
+-- Ctrl + number to avoid clashing with driving binds. If the key-read API
+-- isn't present on a build, reads just no-op and the panel's CTRL indicator
+-- stays "up" — which tells us to switch input methods.
+local VK = { CTRL = 0x11, N1 = 0x31, N2 = 0x32, N3 = 0x33, N4 = 0x34, N5 = 0x35, N6 = 0x36 }
+local keyState = {}
+local ctrlDown = false
+local editorMessage, editorMessageTimer = '', 0
+
+-- Panel visibility — declared here (not in drawUI) because the hotkey handler
+-- below toggles the leaderboard.
+local showLeaderboard = false
+local showShop = false
+
+local function editorSetMessage(t) editorMessage, editorMessageTimer = t, 3 end
+
+local function rawKeyDown(vk)
+  local d = false
+  if not pcall(function() d = ac.isKeyDown(vk) and true or false end) then
+    pcall(function() d = ui.keyboardButtonDown(vk) and true or false end)
+  end
+  return d
+end
+
+local function keyEdge(vk)
+  local down = rawKeyDown(vk)
+  local was = keyState[vk] or false
+  keyState[vk] = down
+  return down and not was
+end
+
+local function updateEditorHotkeys(car)
+  ctrlDown = rawKeyDown(VK.CTRL)
+  -- Compute edges every frame so held-state stays current regardless of Ctrl.
+  local e1, e2, e3, e4, e5, e6 =
+    keyEdge(VK.N1), keyEdge(VK.N2), keyEdge(VK.N3), keyEdge(VK.N4), keyEdge(VK.N5), keyEdge(VK.N6)
+
+  if ctrlDown and e6 then
+    showLeaderboard = not showLeaderboard
+    if showLeaderboard then
+      economyRefreshCashLeaderboard()
+      if drift.active then economyRefreshDriftLeaderboard(drift.zone.name) end
+    end
+  end
+
+  if not CONFIG.showEditor or not ctrlDown then return end
+  if e1 then editorCapture(car); editorSetMessage('Captured point ' .. #editor.points) end
+  if e4 then editor.mode = (editor.mode == 'route') and 'zone' or 'route'; editorSetMessage('Mode: ' .. editor.mode) end
+  if e5 then editorClear(); editorSetMessage('Cleared points') end
+  if e2 then
+    if #editor.points < 2 then
+      editorSetMessage('Need 2+ points')
+    elseif editor.mode == 'route' then
+      startRoute({ name = editor.name, target = editor.target, baseReward = editor.baseReward,
+        bonusPerSecond = editor.bonusPerSecond, points = editor.points })
+      editorSetMessage('Test drive started')
+    else
+      table.insert(DRIFT_ZONES, { name = editor.name, width = editor.width, payoutPer = editor.payoutPer, points = editor.points })
+      editorSetMessage('Test zone added')
+    end
+  end
+  if e3 then
+    if editor.mode == 'route' then editorCopyRoute() else editorCopyZone() end
+    editorSetMessage('Copied to clipboard + log')
+  end
+end
+
+---------------------------------------------------------------------------
 -- script.update
 ---------------------------------------------------------------------------
 
@@ -461,10 +532,10 @@ function script.update(dt)
 
   updateCheckpoints(car)
   updateDriftZones(car, dt)
+  updateEditorHotkeys(car)
 
-  if shopMessageTimer > 0 then
-    shopMessageTimer = shopMessageTimer - dt
-  end
+  if shopMessageTimer > 0 then shopMessageTimer = shopMessageTimer - dt end
+  if editorMessageTimer > 0 then editorMessageTimer = editorMessageTimer - dt end
 
   if not run.active and not drift.active then
     idleRefreshTimer = idleRefreshTimer + dt
@@ -511,9 +582,6 @@ end
 local GREEN = rgbm(0.15, 0.9, 0.45, 1)
 local PANEL_BG = rgbm(0.03, 0.05, 0.04, 0.85)
 
-local showLeaderboard = false
-local showShop = false
-
 local function formatDuration(sec)
   return string.format('%d:%02d', math.floor(sec / 60), math.floor(sec % 60))
 end
@@ -543,15 +611,8 @@ local function drawMainHUD()
     ui.textColored(string.format('%s   %.0f°   %.0f km/h', drift.state:upper(), drift.angle, ac.getCar(0).speedKmh), stateColor)
   end
 
-  if ui.button(showLeaderboard and 'Hide leaderboard' or 'Leaderboard') then
-    showLeaderboard = not showLeaderboard
-    if showLeaderboard then
-      economyRefreshCashLeaderboard()
-      if drift.active then economyRefreshDriftLeaderboard(drift.zone.name) end
-    end
-  end
-  ui.sameLine()
-  if ui.button(showShop and 'Hide shop' or 'Shop') then showShop = not showShop end
+  ui.separator()
+  ui.text('Ctrl+6  ' .. (showLeaderboard and 'hide' or 'show') .. ' leaderboard')
 
   ui.popStyleColor()
   ui.endTransparentWindow()
@@ -631,49 +692,30 @@ end
 
 local function drawEditorWindow()
   if not CONFIG.showEditor then return end
-  ui.beginTransparentWindow('sr_editor', vec2(340, 40), vec2(340, 430), true)
+  ui.beginTransparentWindow('sr_editor', vec2(340, 40), vec2(360, 320), true)
   ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
-  ui.textColored('ROUTE EDITOR', GREEN)
+  ui.textColored('ROUTE EDITOR  (keyboard)', GREEN)
   ui.separator()
 
-  if ui.button(editor.mode == 'route' and '[ Route ]' or 'Route') then editor.mode = 'route' end
-  ui.sameLine()
-  if ui.button(editor.mode == 'zone' and '[ Zone ]' or 'Zone') then editor.mode = 'zone' end
-  editor.name = ui.inputText('Name', editor.name)
-
+  ui.text('Mode: ' .. editor.mode:upper())
+  ui.text('Captured points: ' .. #editor.points)
   if editor.mode == 'route' then
-    editor.target = ui.slider('Target time (s)', editor.target, 5, 180)
-    editor.baseReward = ui.slider('Base reward', editor.baseReward, 0, 5000)
-    editor.bonusPerSecond = ui.slider('Bonus / sec under target', editor.bonusPerSecond, 0, 200)
+    ui.text(string.format('Reward $%d  +$%d/s under %ds', editor.baseReward, editor.bonusPerSecond, editor.target))
   else
-    editor.width = ui.slider('Corridor width (m)', editor.width, 2, 30)
-    editor.payoutPer = ui.slider('Payout per score pt', editor.payoutPer, 0, 20)
+    ui.text(string.format('Corridor %dm  $%d per score pt', editor.width, editor.payoutPer))
   end
-
-  ui.text(string.format('Captured points: %d', #editor.points))
-
-  if ui.button('+ Capture point here') then editorCapture(ac.getCar(0)) end
-  ui.sameLine()
-  if ui.button('Clear') then editorClear() end
-
-  if editor.mode == 'route' then
-    if ui.button('\226\150\183 Test drive') and #editor.points >= 2 then
-      startRoute({ name = editor.name, target = editor.target, baseReward = editor.baseReward,
-        bonusPerSecond = editor.bonusPerSecond, points = editor.points })
-    end
-    ui.sameLine()
-    if ui.button('\226\167\137 Copy route') then editorCopyRoute() end
-  else
-    if ui.button('\226\150\183 Test zone') and #editor.points >= 2 then
-      table.insert(DRIFT_ZONES, { name = editor.name, width = editor.width, payoutPer = editor.payoutPer, points = editor.points })
-    end
-    ui.sameLine()
-    if ui.button('\226\167\137 Copy zone') then editorCopyZone() end
-  end
-
   ui.separator()
-  local newName = ui.inputText('Your display name', storage.playerName)
-  if newName ~= storage.playerName then storage.playerName = newName end
+
+  ui.text('Ctrl+1   capture point here')
+  ui.text('Ctrl+2   ' .. (editor.mode == 'route' and 'test drive route' or 'test drift zone'))
+  ui.text('Ctrl+3   copy ' .. editor.mode .. ' to clipboard')
+  ui.text('Ctrl+4   toggle route / zone')
+  ui.text('Ctrl+5   clear points')
+  ui.text('Ctrl+6   show / hide leaderboard')
+  ui.separator()
+
+  ui.textColored('CTRL: ' .. (ctrlDown and 'DOWN' or 'up'), ctrlDown and GREEN or rgbm(0.55, 0.55, 0.55, 1))
+  if editorMessageTimer > 0 then ui.textColored(editorMessage, GREEN) end
 
   ui.popStyleColor()
   ui.endTransparentWindow()
