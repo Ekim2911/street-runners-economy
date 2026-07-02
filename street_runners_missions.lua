@@ -726,7 +726,7 @@ end
 
 -- Compact always-on driving HUD (cash + live run/drift state).
 local function drawMainHUD()
-  panel('STREET RUNNERS', vec2(24, ui.windowSize().y - 210), vec2(300, 0), function()
+  panel('STREET RUNNERS', vec2(24, ui.windowSize().y - 220), vec2(280, 188), function()
   ui.textColored('街道走者', NEON); ui.sameLine()
   ui.textColored('«' .. titleDisplayName(storage.equippedTitle):upper() .. '»', GOLD)
   ui.textColored('BALANCE  ', DIM); ui.sameLine(); ui.textColored(money(storage.cash), WHITE)
@@ -768,9 +768,9 @@ local function missionsTab()
     ui.textColored('   No routes yet — capture some in the Editor tab.', DIM)
   else
     for i, r in ipairs(ROUTES) do
+      ui.textColored(r.name, WHITE); ui.sameLine(240)
+      ui.textColored(money(r.baseReward) .. ' +bonus', GOLD); ui.sameLine(400)
       if ui.button('Start##r' .. i) then startRoute(r); appOpen = false end
-      ui.sameLine(); ui.textColored(r.name, WHITE)
-      ui.sameLine(); ui.textColored(money(r.baseReward) .. ' + time bonus', GOLD)
     end
   end
   ui.separator()
@@ -779,8 +779,9 @@ local function missionsTab()
     ui.textColored('   No zones yet — capture some in the Editor tab.', DIM)
   else
     for _, z in ipairs(DRIFT_ZONES) do
-      ui.textColored('   ' .. z.name, WHITE); ui.sameLine()
-      ui.textColored('$' .. z.payoutPer .. '/pt · drive in to start', DIM)
+      ui.textColored(z.name, WHITE); ui.sameLine(240)
+      ui.textColored('$' .. z.payoutPer .. '/pt', GOLD); ui.sameLine(340)
+      ui.textColored('drive in to start', DIM)
     end
   end
 end
@@ -789,6 +790,7 @@ local function shopTab()
   ui.textColored('» TITLES', CYAN)
   for _, item in ipairs(SHOP_ITEMS.titles) do
     local owned = ownsTitle(item.id)
+    ui.textColored(item.name, owned and WHITE or DIM); ui.sameLine(280)
     if storage.equippedTitle == item.id then
       ui.textColored('EQUIPPED', NEON)
     elseif owned then
@@ -796,13 +798,12 @@ local function shopTab()
     else
       if ui.button('Buy ' .. money(item.price) .. '##' .. item.id) then shopBuyTitle(item) end
     end
-    ui.sameLine(); ui.textColored(item.name, owned and WHITE or DIM)
   end
   ui.separator()
   ui.textColored('» BOOSTS', CYAN)
   for _, item in ipairs(SHOP_ITEMS.boosts) do
+    ui.textColored(item.name, WHITE); ui.sameLine(280)
     if ui.button('Buy ' .. money(item.price) .. '##' .. item.id) then shopBuyBoost(item) end
-    ui.sameLine(); ui.textColored(item.name, WHITE)
   end
   if activeBoostMultiplier() > 1 then
     ui.separator()
@@ -820,8 +821,8 @@ local function leaderboardTab()
       ui.textColored(economyEnabled() and 'No runs yet.' or 'Economy offline.', DIM)
     else
       for i, row in ipairs(rows) do
-        ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine()
-        ui.textColored(row.playerName or '???', WHITE); ui.sameLine()
+        ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine(40)
+        ui.textColored(row.playerName or '???', WHITE); ui.sameLine(300)
         ui.textColored(comma(row.score or 0), NEON)
       end
     end
@@ -832,12 +833,12 @@ local function leaderboardTab()
       ui.textColored(economyEnabled() and 'Loading...' or 'Economy offline.', DIM)
     else
       for i, row in ipairs(economy.leaderboardCash) do
-        ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine()
-        ui.textColored(row.name or '???', WHITE)
+        ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine(40)
+        ui.textColored(row.name or '???', WHITE); ui.sameLine(220)
         if row.title and row.title ~= '' and row.title ~= 'rookie' then
-          ui.sameLine(); ui.textColored('«' .. titleDisplayName(row.title) .. '»', GOLD)
+          ui.textColored('«' .. titleDisplayName(row.title) .. '»', GOLD)
         end
-        ui.sameLine(); ui.textColored(money(row.balance or 0), NEON)
+        ui.sameLine(420); ui.textColored(money(row.balance or 0), NEON)
       end
     end
   end
@@ -879,7 +880,7 @@ end
 
 local function drawApp()
   if not appOpen then return end
-  panel('STREET RUNNERS APP', vec2(360, 70), vec2(600, 440), function()
+  panel('STREET RUNNERS APP', vec2(360, 70), vec2(560, 300), function()
     ui.textColored('街道走者 STREET RUNNERS', NEON)
     ui.sameLine(); ui.textColored('   ' .. money(storage.cash), GOLD)
     ui.sameLine(); ui.textColored('   «' .. titleDisplayName(storage.equippedTitle):upper() .. '»', CYAN)
