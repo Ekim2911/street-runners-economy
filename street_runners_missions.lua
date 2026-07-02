@@ -658,14 +658,26 @@ local function carSpeed()
   return s
 end
 
-local function drawMainHUD()
-  ui.beginTransparentWindow('sr_hud', vec2(24, ui.windowSize().y - 250), vec2(320, 224), true)
-  ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
+-- A real, draggable/resizable window with a solid background via ui.toolWindow
+-- (inputs enabled so it's interactive). Falls back to the transparent overlay
+-- if a build restricts tool windows in online scripts, so panels never vanish.
+local function panel(id, pos, size, fn)
+  if not pcall(function() ui.toolWindow(id, pos, size, false, true, fn) end) then
+    pcall(function()
+      ui.beginTransparentWindow('t_' .. id, pos, size, true)
+      ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
+      fn()
+      ui.popStyleColor()
+      ui.endTransparentWindow()
+    end)
+  end
+end
 
-  ui.textColored('●', accentPulse()); ui.sameLine()
+local function drawMainHUD()
+  panel('STREET RUNNERS', vec2(24, ui.windowSize().y - 250), vec2(320, 224), function()
   ui.textColored('街道走者', NEON); ui.sameLine()
-  ui.textColored('STREET RUNNERS', CYAN)
-  ui.textColored('◆ ' .. titleDisplayName(storage.equippedTitle):upper(), GOLD)
+  ui.textColored('· runner', DIM)
+  ui.textColored('» ' .. titleDisplayName(storage.equippedTitle):upper(), GOLD)
   ui.separator()
 
   ui.textColored('BALANCE', DIM); ui.sameLine()
@@ -695,19 +707,14 @@ local function drawMainHUD()
 
   ui.separator()
   ui.textColored('Ctrl+6  ' .. (showLeaderboard and 'hide' or 'show') .. ' leaderboard', DIM)
-
-  ui.popStyleColor()
-  ui.endTransparentWindow()
+  end)
 end
 
 local function drawLeaderboardWindow()
   if not showLeaderboard then return end
-  ui.beginTransparentWindow('sr_leaderboard', vec2(24, ui.windowSize().y - 470), vec2(330, 208), true)
-  ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
-
+  panel('LEADERBOARD', vec2(24, ui.windowSize().y - 470), vec2(330, 208), function()
   if drift.active then
-    ui.textColored('●', MAGENTA); ui.sameLine()
-    ui.textColored('ZONE BEST', MAGENTA); ui.sameLine()
+    ui.textColored('» ZONE BEST', MAGENTA); ui.sameLine()
     ui.textColored(drift.zone.name:upper(), CYAN)
     ui.separator()
     local rows = economy.driftLeaderboards[drift.zone.name] or {}
@@ -721,8 +728,7 @@ local function drawLeaderboardWindow()
       end
     end
   else
-    ui.textColored('●', NEON); ui.sameLine()
-    ui.textColored('TOP RUNNERS', NEON)
+    ui.textColored('» TOP RUNNERS', NEON)
     ui.separator()
     if #economy.leaderboardCash == 0 then
       ui.textColored(economyEnabled() and 'Loading...' or 'Economy offline.', DIM)
@@ -731,23 +737,19 @@ local function drawLeaderboardWindow()
         ui.textColored(tostring(i), rankColor(i)); ui.sameLine()
         ui.textColored(row.name or '???', WHITE)
         if row.title and row.title ~= '' and row.title ~= 'rookie' then
-          ui.sameLine(); ui.textColored('◆' .. titleDisplayName(row.title), GOLD)
+          ui.sameLine(); ui.textColored('«' .. titleDisplayName(row.title) .. '»', GOLD)
         end
         ui.sameLine(); ui.textColored(money(row.balance or 0), NEON)
       end
     end
   end
-
-  ui.popStyleColor()
-  ui.endTransparentWindow()
+  end)
 end
 
 local function drawShopWindow()
   if not showShop then return end
-  ui.beginTransparentWindow('sr_shop', vec2(700, 40), vec2(340, 400), true)
-  ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
-  ui.textColored('●', MAGENTA); ui.sameLine()
-  ui.textColored('SHOP', MAGENTA); ui.sameLine()
+  panel('SHOP', vec2(700, 40), vec2(340, 400), function()
+  ui.textColored('BALANCE  ', DIM); ui.sameLine()
   ui.textColored(money(storage.cash), WHITE)
   ui.separator()
 
@@ -755,7 +757,7 @@ local function drawShopWindow()
   for _, item in ipairs(SHOP_ITEMS.titles) do
     local owned = ownsTitle(item.id)
     local col = (storage.equippedTitle == item.id) and NEON or (owned and DIM or WHITE)
-    ui.textColored('◆ ' .. item.name, col); ui.sameLine()
+    ui.textColored('» ' .. item.name, col); ui.sameLine()
     if storage.equippedTitle == item.id then
       ui.textColored('EQUIPPED', NEON)
     elseif owned then
@@ -776,17 +778,13 @@ local function drawShopWindow()
     ui.separator()
     ui.textColored(shopMessage, NEON)
   end
-
-  ui.popStyleColor()
-  ui.endTransparentWindow()
+  end)
 end
 
 local function drawEditorWindow()
   if not CONFIG.showEditor then return end
-  ui.beginTransparentWindow('sr_editor', vec2(352, 40), vec2(360, 326), true)
-  ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
-  ui.textColored('●', accentPulse()); ui.sameLine()
-  ui.textColored('ROUTE EDITOR', NEON); ui.sameLine()
+  panel('ROUTE EDITOR', vec2(352, 40), vec2(360, 326), function()
+  ui.textColored('MODE  ', DIM); ui.sameLine()
   ui.textColored(editor.mode:upper(), editor.mode == 'route' and CYAN or MAGENTA)
   ui.separator()
 
@@ -807,11 +805,9 @@ local function drawEditorWindow()
   ui.separator()
 
   ui.textColored('CTRL', DIM); ui.sameLine()
-  ui.textColored(ctrlDown and '● DOWN' or '○ up', ctrlDown and NEON or DIM)
+  ui.textColored(ctrlDown and 'DOWN' or 'up', ctrlDown and NEON or DIM)
   if editorMessageTimer > 0 then ui.textColored('» ' .. editorMessage, GOLD) end
-
-  ui.popStyleColor()
-  ui.endTransparentWindow()
+  end)
 end
 
 function script.drawUI()
