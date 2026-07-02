@@ -591,7 +591,9 @@ end
 
 local function drawShopWindow()
   if not showShop then return end
-  ui.beginWindow('Shop', vec2(340, 380), vec2(320, 340))
+  ui.beginTransparentWindow('sr_shop', vec2(700, 40), vec2(340, 400), true)
+  ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
+  ui.textColored('SHOP', GREEN)
   ui.textColored(string.format('Cash: $%d', storage.cash), GREEN)
   ui.separator()
 
@@ -623,12 +625,16 @@ local function drawShopWindow()
     ui.textColored(shopMessage, GREEN)
   end
 
-  ui.endWindow()
+  ui.popStyleColor()
+  ui.endTransparentWindow()
 end
 
 local function drawEditorWindow()
   if not CONFIG.showEditor then return end
-  ui.beginWindow('Route Editor', vec2(340, 40), vec2(320, 320))
+  ui.beginTransparentWindow('sr_editor', vec2(340, 40), vec2(340, 430), true)
+  ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
+  ui.textColored('ROUTE EDITOR', GREEN)
+  ui.separator()
 
   if ui.button(editor.mode == 'route' and '[ Route ]' or 'Route') then editor.mode = 'route' end
   ui.sameLine()
@@ -669,7 +675,8 @@ local function drawEditorWindow()
   local newName = ui.inputText('Your display name', storage.playerName)
   if newName ~= storage.playerName then storage.playerName = newName end
 
-  ui.endWindow()
+  ui.popStyleColor()
+  ui.endTransparentWindow()
 end
 
 function script.drawUI()
