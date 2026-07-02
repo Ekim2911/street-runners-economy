@@ -602,40 +602,99 @@ end
 -- script.drawUI — HUD + editor + leaderboards + shop
 ---------------------------------------------------------------------------
 
-local GREEN = rgbm(0.15, 0.9, 0.45, 1)
-local PANEL_BG = rgbm(0.03, 0.05, 0.04, 0.85)
+-- Street Runners neon palette
+local NEON    = rgbm(0.30, 1.00, 0.55, 1)   -- primary green
+local CYAN    = rgbm(0.35, 0.90, 1.00, 1)
+local MAGENTA = rgbm(1.00, 0.25, 0.62, 1)
+local GOLD    = rgbm(1.00, 0.82, 0.28, 1)
+local SILVER  = rgbm(0.82, 0.86, 0.92, 1)
+local BRONZE  = rgbm(0.90, 0.58, 0.32, 1)
+local WHITE   = rgbm(0.96, 0.99, 0.96, 1)
+local DIM     = rgbm(0.52, 0.60, 0.58, 1)
+local REDC    = rgbm(1.00, 0.30, 0.30, 1)
+local GREEN   = NEON
+local PANEL_BG = rgbm(0.02, 0.035, 0.03, 0.92)
 
 local function formatDuration(sec)
   return string.format('%d:%02d', math.floor(sec / 60), math.floor(sec % 60))
 end
 
+-- Thousands-separated integer, e.g. 12345 -> "12,345".
+local function comma(n)
+  n = math.floor(tonumber(n) or 0)
+  local sign = n < 0 and '-' or ''
+  local out = tostring(math.abs(n)):reverse():gsub('(%d%d%d)', '%1,'):reverse()
+  if out:sub(1, 1) == ',' then out = out:sub(2) end
+  return sign .. out
+end
+
+local function money(n)
+  local c = comma(n)
+  if c:sub(1, 1) == '-' then return '-$' .. c:sub(2) end
+  return '$' .. c
+end
+
+-- Bar meter out of solid/light blocks.
+local function meter(frac, segs)
+  frac = math.max(0, math.min(1, frac))
+  local f = math.floor(frac * segs + 0.5)
+  return string.rep('█', f) .. string.rep('░', segs - f)
+end
+
+-- Header accent colour shimmering between magenta and cyan.
+local function accentPulse()
+  local p = 0.5 + 0.5 * math.sin(sessionTime * 4)
+  return rgbm(0.4 + 0.6 * (1 - p), 0.3 + 0.6 * p, 0.7 + 0.3 * p, 1)
+end
+
+local function rankColor(i)
+  if i == 1 then return GOLD elseif i == 2 then return SILVER elseif i == 3 then return BRONZE end
+  return DIM
+end
+
+local function carSpeed()
+  local s = 0
+  pcall(function() s = ac.getCar(0).speedKmh end)
+  return s
+end
+
 local function drawMainHUD()
-  ui.beginTransparentWindow('sr_hud', vec2(20, ui.windowSize().y - 260), vec2(300, 230), true)
+  ui.beginTransparentWindow('sr_hud', vec2(24, ui.windowSize().y - 250), vec2(320, 224), true)
   ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
-  ui.textColored('街道走者  STREET RUNNERS', GREEN)
-  ui.text('[' .. titleDisplayName(storage.equippedTitle) .. ']')
+
+  ui.textColored('●', accentPulse()); ui.sameLine()
+  ui.textColored('街道走者', NEON); ui.sameLine()
+  ui.textColored('STREET RUNNERS', CYAN)
+  ui.textColored('◆ ' .. titleDisplayName(storage.equippedTitle):upper(), GOLD)
   ui.separator()
-  ui.text(string.format('Cash: $%d', storage.cash))
+
+  ui.textColored('BALANCE', DIM); ui.sameLine()
+  ui.textColored(money(storage.cash), WHITE)
 
   if activeBoostMultiplier() > 1 then
-    ui.textColored(string.format('BOOST x%d — %s left', storage.boostMultiplier, formatDuration(activeBoostRemaining())), GREEN)
+    ui.textColored(string.format('» %dx BOOST  %s', storage.boostMultiplier, formatDuration(activeBoostRemaining())), MAGENTA)
   end
 
   if run.active then
-    ui.textColored(string.format('Checkpoint %d/%d', run.index, #run.route.points), GREEN)
-    ui.text(string.format('Time: %.1fs', sessionTime - run.startTime))
+    ui.separator()
+    ui.textColored(string.format('CHECKPOINT  %d / %d', run.index, #run.route.points), CYAN)
+    ui.textColored(string.format('TIME  %.1fs', sessionTime - run.startTime), WHITE)
   end
 
   if drift.active then
-    local stateColor = drift.state == 'spin' and rgbm(1, 0.2, 0.2, 1)
-      or drift.state == 'drifting' and GREEN or rgbm(0.8, 0.8, 0.8, 1)
-    ui.textColored(drift.zone.name, GREEN)
-    ui.text(string.format('Score: %.0f   Combo: x%.1f', drift.score, drift.combo))
-    ui.textColored(string.format('%s   %.0f°   %.0f km/h', drift.state:upper(), drift.angle, ac.getCar(0).speedKmh), stateColor)
+    ui.separator()
+    local stateCol = drift.state == 'spin' and REDC or (drift.state == 'drifting' and NEON or DIM)
+    ui.textColored('» ' .. drift.zone.name:upper(), MAGENTA)
+    ui.textColored('SCORE  ' .. comma(drift.score), WHITE)
+    local frac = drift.combo / CONFIG.drift.comboMax
+    local comboCol = frac > 0.66 and MAGENTA or (frac > 0.33 and GOLD or NEON)
+    ui.textColored(meter(frac, 10), comboCol); ui.sameLine()
+    ui.textColored(string.format('x%.1f', drift.combo), comboCol)
+    ui.textColored(string.format('%s   %d°   %d km/h', drift.state:upper(), math.floor(drift.angle), math.floor(carSpeed())), stateCol)
   end
 
   ui.separator()
-  ui.text('Ctrl+6  ' .. (showLeaderboard and 'hide' or 'show') .. ' leaderboard')
+  ui.textColored('Ctrl+6  ' .. (showLeaderboard and 'hide' or 'show') .. ' leaderboard', DIM)
 
   ui.popStyleColor()
   ui.endTransparentWindow()
@@ -643,28 +702,38 @@ end
 
 local function drawLeaderboardWindow()
   if not showLeaderboard then return end
-  ui.beginTransparentWindow('sr_leaderboard', vec2(20, ui.windowSize().y - 480), vec2(300, 200), true)
+  ui.beginTransparentWindow('sr_leaderboard', vec2(24, ui.windowSize().y - 470), vec2(330, 208), true)
   ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
 
   if drift.active then
-    ui.textColored('ZONE BEST — ' .. drift.zone.name, GREEN)
+    ui.textColored('●', MAGENTA); ui.sameLine()
+    ui.textColored('ZONE BEST', MAGENTA); ui.sameLine()
+    ui.textColored(drift.zone.name:upper(), CYAN)
+    ui.separator()
     local rows = economy.driftLeaderboards[drift.zone.name] or {}
     if #rows == 0 then
-      ui.text(economyEnabled() and 'No runs yet.' or 'Economy offline.')
+      ui.textColored(economyEnabled() and 'No runs yet.' or 'Economy offline.', DIM)
     else
       for i, row in ipairs(rows) do
-        ui.text(string.format('%d. %s — %.0f', i, row.playerName or '???', row.score or 0))
+        ui.textColored(tostring(i), rankColor(i)); ui.sameLine()
+        ui.textColored(row.playerName or '???', WHITE); ui.sameLine()
+        ui.textColored(comma(row.score or 0), NEON)
       end
     end
   else
-    ui.textColored('TOP RUNNERS (cash)', GREEN)
+    ui.textColored('●', NEON); ui.sameLine()
+    ui.textColored('TOP RUNNERS', NEON)
+    ui.separator()
     if #economy.leaderboardCash == 0 then
-      ui.text(economyEnabled() and 'Loading...' or 'Economy offline.')
+      ui.textColored(economyEnabled() and 'Loading...' or 'Economy offline.', DIM)
     else
       for i, row in ipairs(economy.leaderboardCash) do
-        local label = row.title and row.title ~= '' and row.title ~= 'rookie'
-          and ('[' .. titleDisplayName(row.title) .. '] ') or ''
-        ui.text(string.format('%d. %s%s — $%d', i, label, row.name or '???', row.balance or 0))
+        ui.textColored(tostring(i), rankColor(i)); ui.sameLine()
+        ui.textColored(row.name or '???', WHITE)
+        if row.title and row.title ~= '' and row.title ~= 'rookie' then
+          ui.sameLine(); ui.textColored('◆' .. titleDisplayName(row.title), GOLD)
+        end
+        ui.sameLine(); ui.textColored(money(row.balance or 0), NEON)
       end
     end
   end
@@ -677,36 +746,35 @@ local function drawShopWindow()
   if not showShop then return end
   ui.beginTransparentWindow('sr_shop', vec2(700, 40), vec2(340, 400), true)
   ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
-  ui.textColored('SHOP', GREEN)
-  ui.textColored(string.format('Cash: $%d', storage.cash), GREEN)
+  ui.textColored('●', MAGENTA); ui.sameLine()
+  ui.textColored('SHOP', MAGENTA); ui.sameLine()
+  ui.textColored(money(storage.cash), WHITE)
   ui.separator()
 
-  ui.text('Titles')
+  ui.textColored('TITLES', CYAN)
   for _, item in ipairs(SHOP_ITEMS.titles) do
-    ui.text(string.format('%s ($%d)', item.name, item.price))
-    ui.sameLine()
-    if ownsTitle(item.id) then
-      if storage.equippedTitle == item.id then
-        ui.textColored('Equipped', GREEN)
-      elseif ui.button('Equip##' .. item.id) then
-        shopEquipTitle(item.id)
-      end
-    elseif ui.button('Buy##' .. item.id) then
-      shopBuyTitle(item)
+    local owned = ownsTitle(item.id)
+    local col = (storage.equippedTitle == item.id) and NEON or (owned and DIM or WHITE)
+    ui.textColored('◆ ' .. item.name, col); ui.sameLine()
+    if storage.equippedTitle == item.id then
+      ui.textColored('EQUIPPED', NEON)
+    elseif owned then
+      ui.textColored('owned', DIM)
+    else
+      ui.textColored(money(item.price), GOLD)
     end
   end
 
   ui.separator()
-  ui.text('Boosts')
+  ui.textColored('BOOSTS', CYAN)
   for _, item in ipairs(SHOP_ITEMS.boosts) do
-    ui.text(string.format('%s ($%d)', item.name, item.price))
-    ui.sameLine()
-    if ui.button('Buy##' .. item.id) then shopBuyBoost(item) end
+    ui.textColored('» ' .. item.name, WHITE); ui.sameLine()
+    ui.textColored(money(item.price), GOLD)
   end
 
   if shopMessageTimer > 0 then
     ui.separator()
-    ui.textColored(shopMessage, GREEN)
+    ui.textColored(shopMessage, NEON)
   end
 
   ui.popStyleColor()
@@ -715,30 +783,32 @@ end
 
 local function drawEditorWindow()
   if not CONFIG.showEditor then return end
-  ui.beginTransparentWindow('sr_editor', vec2(340, 40), vec2(360, 320), true)
+  ui.beginTransparentWindow('sr_editor', vec2(352, 40), vec2(360, 326), true)
   ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
-  ui.textColored('ROUTE EDITOR  (keyboard)', GREEN)
+  ui.textColored('●', accentPulse()); ui.sameLine()
+  ui.textColored('ROUTE EDITOR', NEON); ui.sameLine()
+  ui.textColored(editor.mode:upper(), editor.mode == 'route' and CYAN or MAGENTA)
   ui.separator()
 
-  ui.text('Mode: ' .. editor.mode:upper())
-  ui.text('Captured points: ' .. #editor.points)
+  ui.textColored('POINTS', DIM); ui.sameLine(); ui.textColored(tostring(#editor.points), WHITE)
   if editor.mode == 'route' then
-    ui.text(string.format('Reward $%d  +$%d/s under %ds', editor.baseReward, editor.bonusPerSecond, editor.target))
+    ui.textColored(string.format('reward %s  +$%d/s under %ds', money(editor.baseReward), editor.bonusPerSecond, editor.target), DIM)
   else
-    ui.text(string.format('Corridor %dm  $%d per score pt', editor.width, editor.payoutPer))
+    ui.textColored(string.format('corridor %dm  $%d per score pt', editor.width, editor.payoutPer), DIM)
   end
   ui.separator()
 
-  ui.text('Ctrl+1   capture point here')
-  ui.text('Ctrl+2   ' .. (editor.mode == 'route' and 'test drive route' or 'test drift zone'))
-  ui.text('Ctrl+3   copy ' .. editor.mode .. ' to clipboard')
-  ui.text('Ctrl+4   toggle route / zone')
-  ui.text('Ctrl+5   clear points')
-  ui.text('Ctrl+6   show / hide leaderboard')
+  ui.textColored('Ctrl+1', CYAN); ui.sameLine(); ui.textColored('capture point here', WHITE)
+  ui.textColored('Ctrl+2', CYAN); ui.sameLine(); ui.textColored(editor.mode == 'route' and 'test drive route' or 'test drift zone', WHITE)
+  ui.textColored('Ctrl+3', CYAN); ui.sameLine(); ui.textColored('copy ' .. editor.mode .. ' to clipboard', WHITE)
+  ui.textColored('Ctrl+4', CYAN); ui.sameLine(); ui.textColored('toggle route / zone', WHITE)
+  ui.textColored('Ctrl+5', CYAN); ui.sameLine(); ui.textColored('clear points', WHITE)
+  ui.textColored('Ctrl+6', CYAN); ui.sameLine(); ui.textColored('show / hide leaderboard', WHITE)
   ui.separator()
 
-  ui.textColored('CTRL: ' .. (ctrlDown and 'DOWN' or 'up'), ctrlDown and GREEN or rgbm(0.55, 0.55, 0.55, 1))
-  if editorMessageTimer > 0 then ui.textColored(editorMessage, GREEN) end
+  ui.textColored('CTRL', DIM); ui.sameLine()
+  ui.textColored(ctrlDown and '● DOWN' or '○ up', ctrlDown and NEON or DIM)
+  if editorMessageTimer > 0 then ui.textColored('» ' .. editorMessage, GOLD) end
 
   ui.popStyleColor()
   ui.endTransparentWindow()
