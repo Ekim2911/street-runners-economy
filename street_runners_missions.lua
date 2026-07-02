@@ -535,12 +535,24 @@ end
 
 local idleRefreshTimer = 0
 
+-- Auto-fill the display name from the in-game driver (Steam) name while it's
+-- still the default, so the leaderboard shows real names instead of "Runner".
+-- Once set to a real name it stops re-fetching. Falls back silently if the
+-- API isn't present on a build.
+local function ensureDisplayName()
+  if storage.playerName ~= '' and storage.playerName ~= CONFIG.playerName then return end
+  local name
+  if not pcall(function() name = ac.getDriverName(0) end) then return end
+  if type(name) == 'string' and name ~= '' then storage.playerName = name end
+end
+
 function script.update(dt)
   sessionTime = sessionTime + dt
 
   local car = ac.getCar(0)
   if not car then return end
 
+  ensureDisplayName()
   updateCheckpoints(car)
   updateDriftZones(car, dt)
   updateEditorHotkeys(car)

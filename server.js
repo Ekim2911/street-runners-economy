@@ -14,7 +14,7 @@ const SCRIPT_TEMPLATE_PATH = process.env.SCRIPT_PATH || path.join(__dirname, 'st
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'economy.db');
 const STEAM_ID_PLACEHOLDER = '__STEAM_ID__';
 const STEAM_ID_PATTERN = /^\d{15,20}$/;
-const PUBLIC_PATHS = new Set(['/health', '/script.lua', '/debug/recent']);
+const PUBLIC_PATHS = new Set(['/health', '/script.lua']);
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const db = new DatabaseSync(DB_PATH);
@@ -59,6 +59,7 @@ const updatePlayer = db.prepare(
   'UPDATE players SET balance = ?, name = ?, title = ?, updated_at = ? WHERE id = ?'
 );
 const topCash = db.prepare('SELECT name, title, balance FROM players ORDER BY balance DESC LIMIT ?');
+const deletePlayer = db.prepare('DELETE FROM players WHERE id = ?');
 const insertDriftRun = db.prepare(`
   INSERT INTO drift_runs (zone_id, zone_name, player_id, player_name, score, combo_max, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -98,25 +99,6 @@ app.use(cors());
 app.use(express.json({ type: ['application/json', 'text/*'] }));
 app.use(express.urlencoded({ extended: true }));
 
-// --- debug request capture (temporary; lets us see exactly what the game
-// client sends). Poll GET /debug/recent. Remove once sync is confirmed. ---
-const recentRequests = [];
-app.use((req, res, next) => {
-  if (req.path !== '/health' && req.path !== '/debug/recent') {
-    recentRequests.push({
-      t: new Date().toISOString(),
-      method: req.method,
-      path: req.path,
-      query: req.query,
-      contentType: req.get('content-type') || null,
-      bodyKeys: req.body && typeof req.body === 'object' ? Object.keys(req.body) : [],
-      body: req.body,
-    });
-    while (recentRequests.length > 40) recentRequests.shift();
-  }
-  next();
-});
-
 if (API_KEY) {
   app.use((req, res, next) => {
     // /script.lua is fetched directly by the game client (via AssettoServer's
@@ -131,8 +113,6 @@ if (API_KEY) {
 }
 
 app.get('/health', (req, res) => res.json({ ok: true }));
-
-app.get('/debug/recent', (req, res) => res.json(recentRequests));
 
 // Serves the mission script with the requesting player's real Steam64 id
 // baked in, when AssettoServer's SCRIPT line uses the {SteamID} placeholder:
@@ -178,6 +158,14 @@ app.post('/players/:id/earn', (req, res) => {
 
 app.get('/leaderboard/cash', (req, res) => {
   res.json(topCash.all(parseLimit(req.query.limit)));
+});
+
+// Admin: remove a player (e.g. test data or a cheater). Open unless
+// ECONOMY_API_KEY is set, in which case the shared-secret middleware gates it
+// like the other write endpoints — recommended before going public.
+app.delete('/players/:id', (req, res) => {
+  const info = deletePlayer.run(req.params.id);
+  res.json({ deleted: Number(info.changes) });
 });
 
 app.post('/drift/runs', (req, res) => {
