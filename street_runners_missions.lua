@@ -466,10 +466,19 @@ end
 -- Ctrl + number to avoid clashing with driving binds. If the key-read API
 -- isn't present on a build, reads just no-op and the panel's CTRL indicator
 -- stays "up" — which tells us to switch input methods.
-local VK = { CTRL = 0x11, N1 = 0x31, N2 = 0x32, N3 = 0x33, N4 = 0x34, N5 = 0x35, N6 = 0x36 }
+local VK = { CTRL = 0x11, N1 = 0x31, N2 = 0x32, N3 = 0x33, N4 = 0x34, N5 = 0x35, N6 = 0x36,
+  LEFT = 0x25, UP = 0x26, RIGHT = 0x27, DOWN = 0x28 }
 local keyState = {}
 local ctrlDown = false
 local editorMessage, editorMessageTimer = '', 0
+
+-- Per-panel screen offset from its default position (drag-to-move + Ctrl+arrows
+-- both write here; panel() reads it). Shared across the update and draw halves.
+local winOffset = {}
+local function winOff(id)
+  if not winOffset[id] then winOffset[id] = { x = 0, y = 0 } end
+  return winOffset[id]
+end
 
 -- Panel visibility — declared here (not in drawUI) because the hotkey handler
 -- below toggles the leaderboard.
@@ -493,11 +502,21 @@ local function keyEdge(vk)
   return down and not was
 end
 
-local function updateEditorHotkeys(car)
+local function updateEditorHotkeys(car, dt)
   ctrlDown = rawKeyDown(VK.CTRL)
   -- Compute edges every frame so held-state stays current regardless of Ctrl.
   local e1, e2, e3, e4, e5, e6 =
     keyEdge(VK.N1), keyEdge(VK.N2), keyEdge(VK.N3), keyEdge(VK.N4), keyEdge(VK.N5), keyEdge(VK.N6)
+
+  -- Ctrl+arrows nudge the main HUD (guaranteed-working fallback for move).
+  if ctrlDown then
+    local o = winOff('STREET RUNNERS')
+    local step = 260 * (dt or 0.016)
+    if rawKeyDown(VK.LEFT)  then o.x = o.x - step end
+    if rawKeyDown(VK.RIGHT) then o.x = o.x + step end
+    if rawKeyDown(VK.UP)    then o.y = o.y - step end
+    if rawKeyDown(VK.DOWN)  then o.y = o.y + step end
+  end
 
   if ctrlDown and e6 then
     showLeaderboard = not showLeaderboard
@@ -555,7 +574,7 @@ function script.update(dt)
   ensureDisplayName()
   updateCheckpoints(car)
   updateDriftZones(car, dt)
-  updateEditorHotkeys(car)
+  updateEditorHotkeys(car, dt)
 
   if shopMessageTimer > 0 then shopMessageTimer = shopMessageTimer - dt end
   if editorMessageTimer > 0 then editorMessageTimer = editorMessageTimer - dt end
@@ -658,15 +677,32 @@ local function carSpeed()
   return s
 end
 
--- A real, draggable/resizable window with a solid background via ui.toolWindow
--- (inputs enabled so it's interactive). Falls back to the transparent overlay
--- if a build restricts tool windows in online scripts, so panels never vanish.
-local function panel(id, pos, size, fn)
-  if not pcall(function() ui.toolWindow(id, pos, size, false, true, fn) end) then
+-- toolWindow gives a solid-background interactive window but is fixed in place
+-- (no native drag). So we position it ourselves from a per-panel offset and
+-- move that offset when the window is hovered and the left mouse button is
+-- dragged — plus Ctrl+arrows for the main HUD. Falls back to the transparent
+-- overlay if a build restricts tool windows, so panels never vanish.
+local function mouseDragDelta()
+  local d
+  if not pcall(function()
+    if ui.windowHovered() and ui.mouseDown(ui.MouseButton.Left) then d = ui.mouseDelta() end
+  end) then return nil end
+  return d
+end
+
+local function panel(id, defaultPos, size, fn)
+  local o = winOff(id)
+  local pos = vec2(defaultPos.x + o.x, defaultPos.y + o.y)
+  local body = function()
+    fn()
+    local d = mouseDragDelta()
+    if d then o.x = o.x + d.x; o.y = o.y + d.y end
+  end
+  if not pcall(function() ui.toolWindow(id, pos, size, false, true, body) end) then
     pcall(function()
       ui.beginTransparentWindow('t_' .. id, pos, size, true)
       ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
-      fn()
+      body()
       ui.popStyleColor()
       ui.endTransparentWindow()
     end)
@@ -706,7 +742,7 @@ local function drawMainHUD()
   end
 
   ui.separator()
-  ui.textColored('Ctrl+6  ' .. (showLeaderboard and 'hide' or 'show') .. ' leaderboard', DIM)
+  ui.textColored('Ctrl+6 leaderboard  ·  drag / Ctrl+arrows to move', DIM)
   end)
 end
 
