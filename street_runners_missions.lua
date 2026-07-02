@@ -467,7 +467,7 @@ end
 -- isn't present on a build, reads just no-op and the panel's CTRL indicator
 -- stays "up" — which tells us to switch input methods.
 local VK = { CTRL = 0x11, N1 = 0x31, N2 = 0x32, N3 = 0x33, N4 = 0x34, N5 = 0x35, N6 = 0x36,
-  LEFT = 0x25, UP = 0x26, RIGHT = 0x27, DOWN = 0x28 }
+  LEFT = 0x25, UP = 0x26, RIGHT = 0x27, DOWN = 0x28, PGUP = 0x21, PGDN = 0x22 }
 local keyState = {}
 local ctrlDown = false
 local editorMessage, editorMessageTimer = '', 0
@@ -479,6 +479,11 @@ local function winOff(id)
   if not winOffset[id] then winOffset[id] = { x = 0, y = 0 } end
   return winOffset[id]
 end
+
+-- HUD scale factor (Ctrl+PageUp/Down). Applied via ui.setWindowFontScale in
+-- panel(); scaleWorks records whether that native call exists on this build.
+local uiScale = 1.0
+local scaleWorks = false
 
 -- Panel visibility — declared here (not in drawUI) because the hotkey handler
 -- below toggles the leaderboard.
@@ -508,7 +513,7 @@ local function updateEditorHotkeys(car, dt)
   local e1, e2, e3, e4, e5, e6 =
     keyEdge(VK.N1), keyEdge(VK.N2), keyEdge(VK.N3), keyEdge(VK.N4), keyEdge(VK.N5), keyEdge(VK.N6)
 
-  -- Ctrl+arrows nudge the main HUD (guaranteed-working fallback for move).
+  -- Ctrl+arrows nudge the main HUD; Ctrl+PageUp/Down scale the whole HUD.
   if ctrlDown then
     local o = winOff('STREET RUNNERS')
     local step = 260 * (dt or 0.016)
@@ -516,6 +521,9 @@ local function updateEditorHotkeys(car, dt)
     if rawKeyDown(VK.RIGHT) then o.x = o.x + step end
     if rawKeyDown(VK.UP)    then o.y = o.y - step end
     if rawKeyDown(VK.DOWN)  then o.y = o.y + step end
+    local sstep = 0.8 * (dt or 0.016)
+    if rawKeyDown(VK.PGUP) then uiScale = math.min(2.2, uiScale + sstep) end
+    if rawKeyDown(VK.PGDN) then uiScale = math.max(0.6, uiScale - sstep) end
   end
 
   if ctrlDown and e6 then
@@ -690,17 +698,26 @@ local function mouseDragDelta()
   return d
 end
 
+-- Scale the current window's text; records support so we only grow the window
+-- box when the font actually scales (otherwise a bigger box with same-size
+-- text looks broken).
+local function applyFontScale(s)
+  if pcall(function() ui.setWindowFontScale(s) end) then scaleWorks = true end
+end
+
 local function panel(id, defaultPos, size, fn)
   local o = winOff(id)
   local pos = vec2(defaultPos.x + o.x, defaultPos.y + o.y)
+  local sz = scaleWorks and vec2(size.x * uiScale, size.y * uiScale) or size
   local body = function()
+    applyFontScale(uiScale)
     fn()
     local d = mouseDragDelta()
     if d then o.x = o.x + d.x; o.y = o.y + d.y end
   end
-  if not pcall(function() ui.toolWindow(id, pos, size, false, true, body) end) then
+  if not pcall(function() ui.toolWindow(id, pos, sz, false, true, body) end) then
     pcall(function()
-      ui.beginTransparentWindow('t_' .. id, pos, size, true)
+      ui.beginTransparentWindow('t_' .. id, pos, sz, true)
       ui.pushStyleColor(ui.StyleColor.WindowBg, PANEL_BG)
       body()
       ui.popStyleColor()
@@ -742,7 +759,7 @@ local function drawMainHUD()
   end
 
   ui.separator()
-  ui.textColored('Ctrl+6 leaderboard  ·  drag / Ctrl+arrows to move', DIM)
+  ui.textColored('Ctrl+6 board · drag/Ctrl+arrows move · Ctrl+PgUp/PgDn size', DIM)
   end)
 end
 
