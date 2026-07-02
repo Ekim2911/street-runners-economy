@@ -485,10 +485,8 @@ end
 local uiScale = 1.0
 local scaleWorks = false
 
--- Panel visibility — declared here (not in drawUI) because the hotkey handler
--- below toggles the leaderboard.
-local showLeaderboard = false
-local showShop = false
+-- App window open state — declared here because the hotkey handler toggles it.
+local appOpen = false
 
 local function editorSetMessage(t) editorMessage, editorMessageTimer = t, 3 end
 
@@ -527,8 +525,8 @@ local function updateEditorHotkeys(car, dt)
   end
 
   if ctrlDown and e6 then
-    showLeaderboard = not showLeaderboard
-    if showLeaderboard then
+    appOpen = not appOpen
+    if appOpen then
       economyRefreshCashLeaderboard()
       if drift.active then economyRefreshDriftLeaderboard(drift.zone.name) end
     end
@@ -726,15 +724,12 @@ local function panel(id, defaultPos, size, fn)
   end
 end
 
+-- Compact always-on driving HUD (cash + live run/drift state).
 local function drawMainHUD()
-  panel('STREET RUNNERS', vec2(24, ui.windowSize().y - 250), vec2(320, 224), function()
+  panel('STREET RUNNERS', vec2(24, ui.windowSize().y - 210), vec2(300, 0), function()
   ui.textColored('街道走者', NEON); ui.sameLine()
-  ui.textColored('· runner', DIM)
-  ui.textColored('» ' .. titleDisplayName(storage.equippedTitle):upper(), GOLD)
-  ui.separator()
-
-  ui.textColored('BALANCE', DIM); ui.sameLine()
-  ui.textColored(money(storage.cash), WHITE)
+  ui.textColored('«' .. titleDisplayName(storage.equippedTitle):upper() .. '»', GOLD)
+  ui.textColored('BALANCE  ', DIM); ui.sameLine(); ui.textColored(money(storage.cash), WHITE)
 
   if activeBoostMultiplier() > 1 then
     ui.textColored(string.format('» %dx BOOST  %s', storage.boostMultiplier, formatDuration(activeBoostRemaining())), MAGENTA)
@@ -759,23 +754,73 @@ local function drawMainHUD()
   end
 
   ui.separator()
-  ui.textColored('Ctrl+6 board · drag/Ctrl+arrows move · Ctrl+PgUp/PgDn size', DIM)
+  ui.textColored('Ctrl+6 open app  ·  drag to move', DIM)
   end)
 end
 
-local function drawLeaderboardWindow()
-  if not showLeaderboard then return end
-  panel('LEADERBOARD', vec2(24, ui.windowSize().y - 470), vec2(330, 208), function()
+---------------------------------------------------------------------------
+-- App tabs
+---------------------------------------------------------------------------
+
+local function missionsTab()
+  ui.textColored('» ROUTES', CYAN)
+  if #ROUTES == 0 then
+    ui.textColored('   No routes yet — capture some in the Editor tab.', DIM)
+  else
+    for i, r in ipairs(ROUTES) do
+      if ui.button('Start##r' .. i) then startRoute(r); appOpen = false end
+      ui.sameLine(); ui.textColored(r.name, WHITE)
+      ui.sameLine(); ui.textColored(money(r.baseReward) .. ' + time bonus', GOLD)
+    end
+  end
+  ui.separator()
+  ui.textColored('» DRIFT ZONES', MAGENTA)
+  if #DRIFT_ZONES == 0 then
+    ui.textColored('   No zones yet — capture some in the Editor tab.', DIM)
+  else
+    for _, z in ipairs(DRIFT_ZONES) do
+      ui.textColored('   ' .. z.name, WHITE); ui.sameLine()
+      ui.textColored('$' .. z.payoutPer .. '/pt · drive in to start', DIM)
+    end
+  end
+end
+
+local function shopTab()
+  ui.textColored('» TITLES', CYAN)
+  for _, item in ipairs(SHOP_ITEMS.titles) do
+    local owned = ownsTitle(item.id)
+    if storage.equippedTitle == item.id then
+      ui.textColored('EQUIPPED', NEON)
+    elseif owned then
+      if ui.button('Equip##' .. item.id) then shopEquipTitle(item.id) end
+    else
+      if ui.button('Buy ' .. money(item.price) .. '##' .. item.id) then shopBuyTitle(item) end
+    end
+    ui.sameLine(); ui.textColored(item.name, owned and WHITE or DIM)
+  end
+  ui.separator()
+  ui.textColored('» BOOSTS', CYAN)
+  for _, item in ipairs(SHOP_ITEMS.boosts) do
+    if ui.button('Buy ' .. money(item.price) .. '##' .. item.id) then shopBuyBoost(item) end
+    ui.sameLine(); ui.textColored(item.name, WHITE)
+  end
+  if activeBoostMultiplier() > 1 then
+    ui.separator()
+    ui.textColored(string.format('Active: %dx for %s', storage.boostMultiplier, formatDuration(activeBoostRemaining())), MAGENTA)
+  end
+  if shopMessageTimer > 0 then ui.textColored('» ' .. shopMessage, NEON) end
+end
+
+local function leaderboardTab()
   if drift.active then
-    ui.textColored('» ZONE BEST', MAGENTA); ui.sameLine()
-    ui.textColored(drift.zone.name:upper(), CYAN)
+    ui.textColored('» ZONE BEST · ' .. drift.zone.name:upper(), MAGENTA)
     ui.separator()
     local rows = economy.driftLeaderboards[drift.zone.name] or {}
     if #rows == 0 then
       ui.textColored(economyEnabled() and 'No runs yet.' or 'Economy offline.', DIM)
     else
       for i, row in ipairs(rows) do
-        ui.textColored(tostring(i), rankColor(i)); ui.sameLine()
+        ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine()
         ui.textColored(row.playerName or '???', WHITE); ui.sameLine()
         ui.textColored(comma(row.score or 0), NEON)
       end
@@ -787,7 +832,7 @@ local function drawLeaderboardWindow()
       ui.textColored(economyEnabled() and 'Loading...' or 'Economy offline.', DIM)
     else
       for i, row in ipairs(economy.leaderboardCash) do
-        ui.textColored(tostring(i), rankColor(i)); ui.sameLine()
+        ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine()
         ui.textColored(row.name or '???', WHITE)
         if row.title and row.title ~= '' and row.title ~= 'rookie' then
           ui.sameLine(); ui.textColored('«' .. titleDisplayName(row.title) .. '»', GOLD)
@@ -796,76 +841,67 @@ local function drawLeaderboardWindow()
       end
     end
   end
-  end)
 end
 
-local function drawShopWindow()
-  if not showShop then return end
-  panel('SHOP', vec2(700, 40), vec2(340, 400), function()
-  ui.textColored('BALANCE  ', DIM); ui.sameLine()
-  ui.textColored(money(storage.cash), WHITE)
+local function editorTab()
+  if ui.button((editor.mode == 'route' and '[ ROUTE ]' or 'ROUTE') .. '##emr') then editor.mode = 'route' end
+  ui.sameLine()
+  if ui.button((editor.mode == 'zone' and '[ ZONE ]' or 'ZONE') .. '##emz') then editor.mode = 'zone' end
+  ui.sameLine(); ui.textColored('points: ' .. #editor.points, DIM)
   ui.separator()
 
-  ui.textColored('TITLES', CYAN)
-  for _, item in ipairs(SHOP_ITEMS.titles) do
-    local owned = ownsTitle(item.id)
-    local col = (storage.equippedTitle == item.id) and NEON or (owned and DIM or WHITE)
-    ui.textColored('» ' .. item.name, col); ui.sameLine()
-    if storage.equippedTitle == item.id then
-      ui.textColored('EQUIPPED', NEON)
-    elseif owned then
-      ui.textColored('owned', DIM)
-    else
-      ui.textColored(money(item.price), GOLD)
-    end
-  end
-
-  ui.separator()
-  ui.textColored('BOOSTS', CYAN)
-  for _, item in ipairs(SHOP_ITEMS.boosts) do
-    ui.textColored('» ' .. item.name, WHITE); ui.sameLine()
-    ui.textColored(money(item.price), GOLD)
-  end
-
-  if shopMessageTimer > 0 then
-    ui.separator()
-    ui.textColored(shopMessage, NEON)
-  end
-  end)
-end
-
-local function drawEditorWindow()
-  if not CONFIG.showEditor then return end
-  panel('ROUTE EDITOR', vec2(352, 40), vec2(360, 326), function()
-  ui.textColored('MODE  ', DIM); ui.sameLine()
-  ui.textColored(editor.mode:upper(), editor.mode == 'route' and CYAN or MAGENTA)
-  ui.separator()
-
-  ui.textColored('POINTS', DIM); ui.sameLine(); ui.textColored(tostring(#editor.points), WHITE)
+  if ui.button('Capture point##ec') then editorCapture(ac.getCar(0)); editorSetMessage('Captured ' .. #editor.points) end
+  ui.sameLine()
+  if ui.button('Clear##ecl') then editorClear() end
   if editor.mode == 'route' then
-    ui.textColored(string.format('reward %s  +$%d/s under %ds', money(editor.baseReward), editor.bonusPerSecond, editor.target), DIM)
+    if ui.button('Test drive##et') then
+      if #editor.points >= 2 then
+        startRoute({ name = editor.name, target = editor.target, baseReward = editor.baseReward,
+          bonusPerSecond = editor.bonusPerSecond, points = editor.points })
+        appOpen = false
+      else editorSetMessage('Need 2+ points') end
+    end
+    ui.sameLine()
+    if ui.button('Copy route##ecp') then editorCopyRoute(); editorSetMessage('Copied to clipboard + log') end
   else
-    ui.textColored(string.format('corridor %dm  $%d per score pt', editor.width, editor.payoutPer), DIM)
+    if ui.button('Test zone##etz') then
+      if #editor.points >= 2 then
+        table.insert(DRIFT_ZONES, { name = editor.name, width = editor.width, payoutPer = editor.payoutPer, points = editor.points })
+      else editorSetMessage('Need 2+ points') end
+    end
+    ui.sameLine()
+    if ui.button('Copy zone##ecpz') then editorCopyZone(); editorSetMessage('Copied to clipboard + log') end
   end
   ui.separator()
-
-  ui.textColored('Ctrl+1', CYAN); ui.sameLine(); ui.textColored('capture point here', WHITE)
-  ui.textColored('Ctrl+2', CYAN); ui.sameLine(); ui.textColored(editor.mode == 'route' and 'test drive route' or 'test drift zone', WHITE)
-  ui.textColored('Ctrl+3', CYAN); ui.sameLine(); ui.textColored('copy ' .. editor.mode .. ' to clipboard', WHITE)
-  ui.textColored('Ctrl+4', CYAN); ui.sameLine(); ui.textColored('toggle route / zone', WHITE)
-  ui.textColored('Ctrl+5', CYAN); ui.sameLine(); ui.textColored('clear points', WHITE)
-  ui.textColored('Ctrl+6', CYAN); ui.sameLine(); ui.textColored('show / hide leaderboard', WHITE)
-  ui.separator()
-
-  ui.textColored('CTRL', DIM); ui.sameLine()
-  ui.textColored(ctrlDown and 'DOWN' or 'up', ctrlDown and NEON or DIM)
+  ui.textColored('While driving:  Ctrl+1 capture · Ctrl+2 test · Ctrl+3 copy · Ctrl+4 mode', DIM)
   if editorMessageTimer > 0 then ui.textColored('» ' .. editorMessage, GOLD) end
+end
+
+local function drawApp()
+  if not appOpen then return end
+  panel('STREET RUNNERS APP', vec2(360, 70), vec2(600, 440), function()
+    ui.textColored('街道走者 STREET RUNNERS', NEON)
+    ui.sameLine(); ui.textColored('   ' .. money(storage.cash), GOLD)
+    ui.sameLine(); ui.textColored('   «' .. titleDisplayName(storage.equippedTitle):upper() .. '»', CYAN)
+    ui.separator()
+
+    local ok = pcall(function()
+      ui.tabBar('sr_tabs', function()
+        ui.tabItem('MISSIONS', missionsTab)
+        ui.tabItem('SHOP', shopTab)
+        ui.tabItem('LEADERBOARD', leaderboardTab)
+        if CONFIG.showEditor then ui.tabItem('EDITOR', editorTab) end
+      end)
+    end)
+    if not ok then
+      -- No tab bar on this build: stack the sections instead.
+      missionsTab(); ui.separator(); shopTab(); ui.separator(); leaderboardTab()
+      if CONFIG.showEditor then ui.separator(); editorTab() end
+    end
   end)
 end
 
 function script.drawUI()
   pcall(drawMainHUD)
-  pcall(drawLeaderboardWindow)
-  pcall(drawShopWindow)
-  pcall(drawEditorWindow)
+  pcall(drawApp)
 end
