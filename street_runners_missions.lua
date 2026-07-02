@@ -179,11 +179,31 @@ local function economyEnabled()
   return CONFIG.economyUrl ~= nil and CONFIG.economyUrl ~= ''
 end
 
-local function economyHeaders()
-  if CONFIG.apiKey and CONFIG.apiKey ~= '' then
-    return { ['x-economy-key'] = CONFIG.apiKey }
+-- Headers for a request. Always send a table (CSP's web.get/post take
+-- headers as the 2nd arg); include JSON content-type for posts and the
+-- optional shared secret.
+local function economyHeaders(json)
+  local h = {}
+  if json then h['Content-Type'] = 'application/json' end
+  if CONFIG.apiKey and CONFIG.apiKey ~= '' then h['x-economy-key'] = CONFIG.apiKey end
+  return h
+end
+
+-- Minimal JSON encoder for our flat request bodies (string/number/boolean
+-- values only), so we don't depend on a JSON.stringify existing in the CSP
+-- build and can send a proper application/json string body.
+local function jsonEncode(t)
+  local parts = {}
+  for k, v in pairs(t) do
+    local tv, val = type(v)
+    if tv == 'number' or tv == 'boolean' then
+      val = tostring(v)
+    else
+      val = '"' .. tostring(v):gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
+    end
+    parts[#parts + 1] = '"' .. tostring(k) .. '":' .. val
   end
-  return nil
+  return '{' .. table.concat(parts, ',') .. '}'
 end
 
 -- Pure-Lua percent-encoding so we don't depend on ac.encodeURIComponent
@@ -203,25 +223,16 @@ local function safeJsonParse(s)
   return nil
 end
 
--- CSP's web.* header support varies by build, so try the (url, headers,
--- ...) overload first and fall back to the plain form if that pcall fails.
--- (If apiKey is set but the header overload is unsupported, the fallback
--- sends no key and the server 401s — the callback just leaves us in local
--- mode, which is the safe degradation.)
+-- CSP web API: web.get(url, headers, callback) and
+-- web.post(url, headers, dataString, callback). Body is a JSON string.
 local function economyGet(path, callback)
   if not economyEnabled() or web == nil then return end
-  local headers = economyHeaders()
-  local url = CONFIG.economyUrl .. path
-  local ok = headers and pcall(web.get, url, headers, callback)
-  if not ok then pcall(web.get, url, callback) end
+  pcall(web.get, CONFIG.economyUrl .. path, economyHeaders(false), callback)
 end
 
 local function economyPost(path, body, callback)
   if not economyEnabled() or web == nil then return end
-  local headers = economyHeaders()
-  local url = CONFIG.economyUrl .. path
-  local ok = headers and pcall(web.post, url, headers, body, callback)
-  if not ok then pcall(web.post, url, body, callback) end
+  pcall(web.post, CONFIG.economyUrl .. path, economyHeaders(true), jsonEncode(body), callback)
 end
 
 local function economyEarn(amount, source)

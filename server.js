@@ -14,7 +14,7 @@ const SCRIPT_TEMPLATE_PATH = process.env.SCRIPT_PATH || path.join(__dirname, 'st
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'economy.db');
 const STEAM_ID_PLACEHOLDER = '__STEAM_ID__';
 const STEAM_ID_PATTERN = /^\d{15,20}$/;
-const PUBLIC_PATHS = new Set(['/health', '/script.lua']);
+const PUBLIC_PATHS = new Set(['/health', '/script.lua', '/debug/recent']);
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const db = new DatabaseSync(DB_PATH);
@@ -92,7 +92,30 @@ function ensurePlayer(id, name, title) {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Accept JSON and form-encoded bodies, and tolerate a wrong/missing
+// Content-Type by also parsing text/* as JSON — CSP's web.post body encoding
+// varies, so we normalize on the server side.
+app.use(express.json({ type: ['application/json', 'text/*'] }));
+app.use(express.urlencoded({ extended: true }));
+
+// --- debug request capture (temporary; lets us see exactly what the game
+// client sends). Poll GET /debug/recent. Remove once sync is confirmed. ---
+const recentRequests = [];
+app.use((req, res, next) => {
+  if (req.path !== '/health' && req.path !== '/debug/recent') {
+    recentRequests.push({
+      t: new Date().toISOString(),
+      method: req.method,
+      path: req.path,
+      query: req.query,
+      contentType: req.get('content-type') || null,
+      bodyKeys: req.body && typeof req.body === 'object' ? Object.keys(req.body) : [],
+      body: req.body,
+    });
+    while (recentRequests.length > 40) recentRequests.shift();
+  }
+  next();
+});
 
 if (API_KEY) {
   app.use((req, res, next) => {
@@ -108,6 +131,8 @@ if (API_KEY) {
 }
 
 app.get('/health', (req, res) => res.json({ ok: true }));
+
+app.get('/debug/recent', (req, res) => res.json(recentRequests));
 
 // Serves the mission script with the requesting player's real Steam64 id
 // baked in, when AssettoServer's SCRIPT line uses the {SteamID} placeholder:
@@ -137,8 +162,10 @@ app.get('/players/:id', (req, res) => {
 });
 
 app.post('/players/:id/earn', (req, res) => {
-  const { amount, name, title } = req.body || {};
-  if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+  const { name, title } = req.body || {};
+  // Coerce so a numeric string (form-encoded body) is accepted too.
+  const amount = Number((req.body || {}).amount);
+  if (!Number.isFinite(amount)) {
     return res.status(400).json({ error: 'amount must be a number' });
   }
   const player = ensurePlayer(req.params.id, name, title);
@@ -154,8 +181,10 @@ app.get('/leaderboard/cash', (req, res) => {
 });
 
 app.post('/drift/runs', (req, res) => {
-  const { zoneId, zoneName, playerId, playerName, score, comboMax } = req.body || {};
-  if (!zoneId || !playerId || typeof score !== 'number') {
+  const { zoneId, zoneName, playerId, playerName } = req.body || {};
+  const score = Number((req.body || {}).score);
+  const comboMax = Number((req.body || {}).comboMax) || 1;
+  if (!zoneId || !playerId || !Number.isFinite(score)) {
     return res.status(400).json({ error: 'zoneId, playerId, and numeric score are required' });
   }
   insertDriftRun.run(
@@ -164,7 +193,7 @@ app.post('/drift/runs', (req, res) => {
     playerId,
     playerName || 'Runner',
     score,
-    comboMax || 1,
+    comboMax,
     Date.now()
   );
   res.status(201).json({ ok: true });
