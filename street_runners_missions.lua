@@ -18,7 +18,7 @@ local CONFIG = {
   showEditor = true,          -- flip to false once ROUTES/DRIFT_ZONES are baked in and re-host
   startingCash = 5000,
   checkpointRadius = 8,       -- meters
-  economyUrl = '',            -- e.g. 'http://172.234.212.108:3000' — blank = local-only mode
+  economyUrl = 'https://street-runners-economy-production.up.railway.app',  -- blank = local-only mode
   apiKey = '',                -- must match ECONOMY_API_KEY on the server, if set
   playerName = 'Runner',      -- shown on leaderboards until the player renames via the editor
   drift = {
