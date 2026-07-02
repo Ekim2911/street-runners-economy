@@ -467,7 +467,7 @@ end
 -- isn't present on a build, reads just no-op and the panel's CTRL indicator
 -- stays "up" — which tells us to switch input methods.
 local VK = { CTRL = 0x11, N1 = 0x31, N2 = 0x32, N3 = 0x33, N4 = 0x34, N5 = 0x35, N6 = 0x36,
-  LEFT = 0x25, UP = 0x26, RIGHT = 0x27, DOWN = 0x28, PGUP = 0x21, PGDN = 0x22 }
+  N8 = 0x38, N9 = 0x39, LEFT = 0x25, UP = 0x26, RIGHT = 0x27, DOWN = 0x28 }
 local keyState = {}
 local ctrlDown = false
 local editorMessage, editorMessageTimer = '', 0
@@ -520,8 +520,8 @@ local function updateEditorHotkeys(car, dt)
     if rawKeyDown(VK.UP)    then o.y = o.y - step end
     if rawKeyDown(VK.DOWN)  then o.y = o.y + step end
     local sstep = 0.8 * (dt or 0.016)
-    if rawKeyDown(VK.PGUP) then uiScale = math.min(2.2, uiScale + sstep) end
-    if rawKeyDown(VK.PGDN) then uiScale = math.max(0.6, uiScale - sstep) end
+    if rawKeyDown(VK.N8) then uiScale = math.min(2.5, uiScale + sstep) end
+    if rawKeyDown(VK.N9) then uiScale = math.max(0.6, uiScale - sstep) end
   end
 
   if ctrlDown and e6 then
@@ -706,7 +706,10 @@ end
 local function panel(id, defaultPos, size, fn)
   local o = winOff(id)
   local pos = vec2(defaultPos.x + o.x, defaultPos.y + o.y)
-  local sz = scaleWorks and vec2(size.x * uiScale, size.y * uiScale) or size
+  -- Always scale the window box so resize is visible even if the native
+  -- font-scale call is missing; applyFontScale scales the text on top when
+  -- the build supports it.
+  local sz = vec2(size.x * uiScale, size.y * uiScale)
   local body = function()
     applyFontScale(uiScale)
     fn()
@@ -754,7 +757,8 @@ local function drawMainHUD()
   end
 
   ui.separator()
-  ui.textColored('Ctrl+6 open app  ·  drag to move', DIM)
+  ui.textColored('Ctrl+6 app · drag move', DIM)
+  ui.textColored(string.format('Ctrl+8/9 resize (%.1fx)%s', uiScale, scaleWorks and '' or ' [box only]'), DIM)
   end)
 end
 
