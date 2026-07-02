@@ -727,6 +727,35 @@ local function panel(id, defaultPos, size, fn)
   end
 end
 
+-- Colored buttons for that "app" look. Self-balancing: pops exactly as many
+-- style colors as were pushed, so a missing StyleColor slot can't corrupt the
+-- style stack.
+local BTN_TX     = rgbm(0.04, 0.06, 0.05, 1)
+local BTN_BUY    = rgbm(1.00, 0.72, 0.22, 1)
+local BTN_GO     = rgbm(0.22, 0.90, 0.48, 1)
+local BTN_INFO   = rgbm(0.35, 0.66, 0.96, 1)
+local BTN_DANGER = rgbm(0.95, 0.35, 0.35, 1)
+local BTN_MUTED  = rgbm(0.28, 0.32, 0.36, 1)
+
+local function tintBtn(label, base)
+  local hover = base
+  pcall(function() hover = rgbm(math.min(1, base.r * 1.25), math.min(1, base.g * 1.25), math.min(1, base.b * 1.25), 1) end)
+  local pushed = 0
+  pcall(function() ui.pushStyleColor(ui.StyleColor.Button, base); pushed = pushed + 1 end)
+  pcall(function() ui.pushStyleColor(ui.StyleColor.ButtonHovered, hover); pushed = pushed + 1 end)
+  pcall(function() ui.pushStyleColor(ui.StyleColor.ButtonActive, base); pushed = pushed + 1 end)
+  pcall(function() ui.pushStyleColor(ui.StyleColor.Text, BTN_TX); pushed = pushed + 1 end)
+  local clicked = ui.button(label)
+  for _ = 1, pushed do pcall(function() ui.popStyleColor() end) end
+  return clicked
+end
+
+local function accentSep(col)
+  local ok = pcall(function() ui.pushStyleColor(ui.StyleColor.Separator, col) end)
+  ui.separator()
+  if ok then pcall(function() ui.popStyleColor() end) end
+end
+
 -- Compact always-on driving HUD (cash + live run/drift state).
 local function drawMainHUD()
   panel('STREET RUNNERS', vec2(24, ui.windowSize().y - 220), vec2(280, 188), function()
@@ -774,7 +803,7 @@ local function missionsTab()
     for i, r in ipairs(ROUTES) do
       ui.textColored(r.name, WHITE); ui.sameLine(240)
       ui.textColored(money(r.baseReward) .. ' +bonus', GOLD); ui.sameLine(400)
-      if ui.button('Start##r' .. i) then startRoute(r); appOpen = false end
+      if tintBtn('Start##r' .. i, BTN_GO) then startRoute(r); appOpen = false end
     end
   end
   ui.separator()
@@ -798,16 +827,16 @@ local function shopTab()
     if storage.equippedTitle == item.id then
       ui.textColored('EQUIPPED', NEON)
     elseif owned then
-      if ui.button('Equip##' .. item.id) then shopEquipTitle(item.id) end
+      if tintBtn('Equip##' .. item.id, BTN_GO) then shopEquipTitle(item.id) end
     else
-      if ui.button('Buy ' .. money(item.price) .. '##' .. item.id) then shopBuyTitle(item) end
+      if tintBtn('Buy ' .. money(item.price) .. '##' .. item.id, BTN_BUY) then shopBuyTitle(item) end
     end
   end
-  ui.separator()
+  accentSep(CYAN)
   ui.textColored('» BOOSTS', CYAN)
   for _, item in ipairs(SHOP_ITEMS.boosts) do
     ui.textColored(item.name, WHITE); ui.sameLine(280)
-    if ui.button('Buy ' .. money(item.price) .. '##' .. item.id) then shopBuyBoost(item) end
+    if tintBtn('Buy ' .. money(item.price) .. '##' .. item.id, BTN_BUY) then shopBuyBoost(item) end
   end
   if activeBoostMultiplier() > 1 then
     ui.separator()
@@ -816,7 +845,13 @@ local function shopTab()
   if shopMessageTimer > 0 then ui.textColored('» ' .. shopMessage, NEON) end
 end
 
+local lbLastRefresh = -100
 local function leaderboardTab()
+  if economyEnabled() and sessionTime - lbLastRefresh > 4 then
+    lbLastRefresh = sessionTime
+    economyRefreshCashLeaderboard()
+    if drift.active then economyRefreshDriftLeaderboard(drift.zone.name) end
+  end
   if drift.active then
     ui.textColored('» ZONE BEST · ' .. drift.zone.name:upper(), MAGENTA)
     ui.separator()
@@ -849,17 +884,17 @@ local function leaderboardTab()
 end
 
 local function editorTab()
-  if ui.button((editor.mode == 'route' and '[ ROUTE ]' or 'ROUTE') .. '##emr') then editor.mode = 'route' end
+  if tintBtn((editor.mode == 'route' and '[ ROUTE ]' or 'ROUTE') .. '##emr', editor.mode == 'route' and BTN_GO or BTN_MUTED) then editor.mode = 'route' end
   ui.sameLine()
-  if ui.button((editor.mode == 'zone' and '[ ZONE ]' or 'ZONE') .. '##emz') then editor.mode = 'zone' end
+  if tintBtn((editor.mode == 'zone' and '[ ZONE ]' or 'ZONE') .. '##emz', editor.mode == 'zone' and BTN_GO or BTN_MUTED) then editor.mode = 'zone' end
   ui.sameLine(); ui.textColored('points: ' .. #editor.points, DIM)
   ui.separator()
 
-  if ui.button('Capture point##ec') then editorCapture(ac.getCar(0)); editorSetMessage('Captured ' .. #editor.points) end
+  if tintBtn('Capture point##ec', BTN_GO) then editorCapture(ac.getCar(0)); editorSetMessage('Captured ' .. #editor.points) end
   ui.sameLine()
-  if ui.button('Clear##ecl') then editorClear() end
+  if tintBtn('Clear##ecl', BTN_DANGER) then editorClear() end
   if editor.mode == 'route' then
-    if ui.button('Test drive##et') then
+    if tintBtn('Test drive##et', BTN_INFO) then
       if #editor.points >= 2 then
         startRoute({ name = editor.name, target = editor.target, baseReward = editor.baseReward,
           bonusPerSecond = editor.bonusPerSecond, points = editor.points })
@@ -867,15 +902,15 @@ local function editorTab()
       else editorSetMessage('Need 2+ points') end
     end
     ui.sameLine()
-    if ui.button('Copy route##ecp') then editorCopyRoute(); editorSetMessage('Copied to clipboard + log') end
+    if tintBtn('Copy route##ecp', BTN_INFO) then editorCopyRoute(); editorSetMessage('Copied to clipboard + log') end
   else
-    if ui.button('Test zone##etz') then
+    if tintBtn('Test zone##etz', BTN_INFO) then
       if #editor.points >= 2 then
         table.insert(DRIFT_ZONES, { name = editor.name, width = editor.width, payoutPer = editor.payoutPer, points = editor.points })
       else editorSetMessage('Need 2+ points') end
     end
     ui.sameLine()
-    if ui.button('Copy zone##ecpz') then editorCopyZone(); editorSetMessage('Copied to clipboard + log') end
+    if tintBtn('Copy zone##ecpz', BTN_INFO) then editorCopyZone(); editorSetMessage('Copied to clipboard + log') end
   end
   ui.separator()
   ui.textColored('While driving:  Ctrl+1 capture · Ctrl+2 test · Ctrl+3 copy · Ctrl+4 mode', DIM)
@@ -888,7 +923,7 @@ local function drawApp()
     ui.textColored('街道走者 STREET RUNNERS', NEON)
     ui.sameLine(); ui.textColored('   ' .. money(storage.cash), GOLD)
     ui.sameLine(); ui.textColored('   «' .. titleDisplayName(storage.equippedTitle):upper() .. '»', CYAN)
-    ui.separator()
+    accentSep(NEON)
 
     local ok = pcall(function()
       ui.tabBar('sr_tabs', function()
