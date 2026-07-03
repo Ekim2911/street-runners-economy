@@ -692,54 +692,29 @@ local function dirXZ(a, b)
   return dx / len, dz / len
 end
 
-local function lerp3(a, b, t)
-  return vec3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t)
-end
+local GREEN3     = rgbm(0.4, 1.0, 0.55, 1.0)
+local GREEN_GLOW = rgbm(0.4, 1.0, 0.55, 0.22)
+local RED3       = rgbm(1.0, 0.3, 0.38, 1.0)
+local RED_GLOW   = rgbm(1.0, 0.3, 0.38, 0.22)
 
--- A truss between chord p1->p2 and a parallel chord offset by (ox,oy,oz):
--- two chords + vertical web members + diagonal braces = a lattice beam/tower.
--- Trusses are meant to be thin members, so debug lines read as real structure.
-local function truss(p1, p2, ox, oy, oz, segs, col)
-  local q1 = vec3(p1.x + ox, p1.y + oy, p1.z + oz)
-  local q2 = vec3(p2.x + ox, p2.y + oy, p2.z + oz)
-  render.debugLine(p1, p2, col)
-  render.debugLine(q1, q2, col)
-  for i = 0, segs do
-    local t = i / segs
-    render.debugLine(lerp3(p1, p2, t), lerp3(q1, q2, t), col)
-    if i < segs then render.debugLine(lerp3(p1, p2, t), lerp3(q1, q2, (i + 1) / segs), col) end
+-- A laser curtain across the road: a translucent glowing plane (if the build
+-- has render.quad) plus bright horizontal beams at a few heights.
+local function drawGate(p, ax, az, halfW, beamCol, glowCol)
+  local h = 1.5
+  local Lx, Lz = p.x + ax * halfW, p.z + az * halfW
+  local Rx, Rz = p.x - ax * halfW, p.z - az * halfW
+  pcall(function()
+    local L = vec3(Lx, p.y + 0.04, Lz)
+    local R = vec3(Rx, p.y + 0.04, Rz)
+    local Lt = vec3(Lx, p.y + h, Lz)
+    local Rt = vec3(Rx, p.y + h, Rz)
+    render.quad(L, R, Rt, Lt, glowCol)
+    render.quad(Lt, Rt, R, L, glowCol)
+  end)
+  for _, yy in ipairs({ 0.05, 0.55, 1.05, 1.5 }) do
+    render.debugLine(vec3(Lx, p.y + yy, Lz), vec3(Rx, p.y + yy, Rz), beamCol)
   end
 end
-
--- Checkered start/finish line across the corridor (filled quads if the build
--- has render.quad; harmless no-op otherwise).
-local function checkeredGround(L, R, dx, dz)
-  local n, depth = 10, 1.3
-  for i = 0, n - 1 do
-    local a = lerp3(L, R, i / n)
-    local b = lerp3(L, R, (i + 1) / n)
-    local c = vec3(b.x + dx * depth, b.y + 0.03, b.z + dz * depth)
-    local d = vec3(a.x + dx * depth, a.y + 0.03, a.z + dz * depth)
-    local qc = (i % 2 == 0) and rgbm(1, 1, 1, 0.85) or rgbm(0.03, 0.03, 0.03, 0.85)
-    pcall(function() render.quad(a, b, c, d, qc); render.quad(d, c, b, a, qc) end)
-  end
-end
-
--- A race gantry: two lattice towers + a trussed top beam + a checkered line.
-local function drawGate(p, dx, dz, ax, az, halfW, col)
-  local H, bh, td = 5.5, 0.7, 0.5
-  local L = vec3(p.x + ax * halfW, p.y, p.z + az * halfW)
-  local R = vec3(p.x - ax * halfW, p.y, p.z - az * halfW)
-  local Lt = vec3(L.x, L.y + H, L.z)
-  local Rt = vec3(R.x, R.y + H, R.z)
-  truss(L, Lt, dx * td, 0, dz * td, 6, col)                                  -- left tower
-  truss(R, Rt, dx * td, 0, dz * td, 6, col)                                  -- right tower
-  truss(Lt, Rt, 0, -bh, 0, math.max(6, math.floor(halfW * 2 / 1.5)), col)   -- top beam
-  checkeredGround(L, R, dx, dz)
-end
-
-local GREEN3 = rgbm(0.35, 1.0, 0.5, 0.9)
-local RED3   = rgbm(1.0, 0.3, 0.35, 0.9)
 
 function script.draw3D()
   pcall(function()
@@ -759,14 +734,12 @@ function script.draw3D()
       local pts = zone.points
       if #pts >= 2 then
         local halfW = (zone.width or 8) / 2
-        local sdx, sdz = dirXZ(pts[1], pts[2])
         local sax, saz = perpXZ(pts[1], pts[2])
-        drawGate(pts[1], sdx, sdz, sax, saz, halfW, GREEN3)
-        local fdx, fdz = dirXZ(pts[#pts - 1], pts[#pts])
+        drawGate(pts[1], sax, saz, halfW, GREEN3, GREEN_GLOW)
         local fax, faz = perpXZ(pts[#pts - 1], pts[#pts])
-        drawGate(pts[#pts], fdx, fdz, fax, faz, halfW, RED3)
-        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 6.3, pts[1].z), 'START', rgbm(0.35, 1, 0.5, 1)) end)
-        pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 6.3, pts[#pts].z), 'FINISH', rgbm(1, 0.3, 0.35, 1)) end)
+        drawGate(pts[#pts], fax, faz, halfW, RED3, RED_GLOW)
+        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 1.9, pts[1].z), 'START', GREEN3) end)
+        pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 1.9, pts[#pts].z), 'FINISH', RED3) end)
       end
     end
 
