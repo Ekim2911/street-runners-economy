@@ -42,6 +42,15 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_drift_runs_zone_player
     ON drift_runs (zone_id, player_id, score DESC);
+
+  CREATE TABLE IF NOT EXISTS missions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,        -- 'route' | 'zone'
+    name TEXT NOT NULL,
+    data TEXT NOT NULL,        -- JSON of the full mission definition
+    created_at INTEGER NOT NULL,
+    UNIQUE (kind, name)
+  );
 `);
 
 // Upgrade path for databases created before the `title` column existed.
@@ -73,6 +82,14 @@ const zoneLeaderboard = db.prepare(`
   ORDER BY score DESC
   LIMIT ?
 `);
+
+const listMissions = db.prepare('SELECT id, kind, name, data FROM missions ORDER BY kind, name');
+// Upsert by (kind, name): a re-saved route replaces the old one.
+const upsertMission = db.prepare(`
+  INSERT INTO missions (kind, name, data, created_at) VALUES (?, ?, ?, ?)
+  ON CONFLICT(kind, name) DO UPDATE SET data = excluded.data
+`);
+const deleteMission = db.prepare('DELETE FROM missions WHERE id = ?');
 
 // Clamp a client-supplied limit to a sane range. Guards against a negative
 // value, which SQLite would treat as "no limit" and dump the whole table.
@@ -189,6 +206,43 @@ app.post('/drift/runs', (req, res) => {
 
 app.get('/drift/leaderboard/:zoneId', (req, res) => {
   res.json(zoneLeaderboard.all(req.params.zoneId, parseLimit(req.query.limit)));
+});
+
+// --- Server-managed missions (routes + drift zones) ---
+// Clients GET these on join and render them; the in-game editor POSTs new ones.
+
+app.get('/routes', (req, res) => {
+  const rows = listMissions.all().map((r) => {
+    let data = null;
+    try { data = JSON.parse(r.data); } catch (e) { data = null; }
+    return { id: r.id, kind: r.kind, name: r.name, data };
+  }).filter((r) => r.data);
+  res.json(rows);
+});
+
+app.post('/routes', (req, res) => {
+  const { kind, name, data } = req.body || {};
+  if ((kind !== 'route' && kind !== 'zone') || !name || typeof data !== 'object' || data == null) {
+    return res.status(400).json({ error: "kind ('route'|'zone'), name, and data object are required" });
+  }
+  if (!Array.isArray(data.points) || data.points.length < 2) {
+    return res.status(400).json({ error: 'data.points must have at least 2 points' });
+  }
+  upsertMission.run(kind, String(name), JSON.stringify(data), Date.now());
+  const saved = listMissions.all().find((r) => r.kind === kind && r.name === String(name));
+  res.status(201).json({ id: saved ? saved.id : null, kind, name });
+});
+
+app.delete('/routes/:id', (req, res) => {
+  const info = deleteMission.run(Number(req.params.id));
+  res.json({ deleted: Number(info.changes) });
+});
+
+// POST alias for delete — the game client uses web.post (DELETE method isn't
+// reliably available in CSP's web API).
+app.post('/routes/:id/delete', (req, res) => {
+  const info = deleteMission.run(Number(req.params.id));
+  res.json({ deleted: Number(info.changes) });
 });
 
 app.listen(PORT, '0.0.0.0', () => {

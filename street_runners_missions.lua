@@ -235,6 +235,34 @@ local function economyPost(path, body, callback)
   pcall(web.post, CONFIG.economyUrl .. path, economyHeaders(true), jsonEncode(body), callback)
 end
 
+-- Post a pre-built JSON string (for nested payloads jsonEncode can't handle).
+local function economyPostRaw(path, jsonStr, callback)
+  if not economyEnabled() or web == nil then return end
+  pcall(web.post, CONFIG.economyUrl .. path, economyHeaders(true), jsonStr, callback)
+end
+
+local function jsStr(s)
+  return '"' .. tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
+end
+
+local function jsPoints(points)
+  local parts = {}
+  for _, p in ipairs(points) do
+    parts[#parts + 1] = string.format('{"x":%.2f,"y":%.2f,"z":%.2f}', p.x, p.y, p.z)
+  end
+  return '[' .. table.concat(parts, ',') .. ']'
+end
+
+local function routePostBody(r)
+  return string.format('{"kind":"route","name":%s,"data":{"name":%s,"target":%d,"baseReward":%d,"bonusPerSecond":%d,"points":%s}}',
+    jsStr(r.name), jsStr(r.name), math.floor(r.target), math.floor(r.baseReward), math.floor(r.bonusPerSecond), jsPoints(r.points))
+end
+
+local function zonePostBody(z)
+  return string.format('{"kind":"zone","name":%s,"data":{"name":%s,"width":%d,"payoutPer":%d,"points":%s}}',
+    jsStr(z.name), jsStr(z.name), math.floor(z.width), math.floor(z.payoutPer), jsPoints(z.points))
+end
+
 local function economyEarn(amount, source)
   local applied = amount
   if applied > 0 then applied = math.floor(applied * activeBoostMultiplier()) end
@@ -271,6 +299,54 @@ local function economyRefreshDriftLeaderboard(zoneName)
     local data = safeJsonParse(response.body)
     if data then economy.driftLeaderboards[zoneName] = data end
   end)
+end
+
+-- Replace a list's contents in place (keeps the table reference the gameplay
+-- loops hold).
+local function rebuildList(tbl, items)
+  for i = #tbl, 1, -1 do tbl[i] = nil end
+  for _, it in ipairs(items) do tbl[#tbl + 1] = it end
+end
+
+-- Pull server-managed routes/zones and rebuild ROUTES / DRIFT_ZONES. Callers
+-- that could disrupt an active run (the idle refresh) already gate on
+-- not run.active/drift.active.
+local function economyLoadMissions()
+  economyGet('/routes', function(err, response)
+    if err or not response then return end
+    local data = safeJsonParse(response.body)
+    if not data then return end
+    local routes, zones = {}, {}
+    for _, m in ipairs(data) do
+      local d = m.data
+      if type(d) == 'table' and type(d.points) == 'table' and #d.points >= 2 then
+        local pts = {}
+        for _, p in ipairs(d.points) do pts[#pts + 1] = vec3(p.x or 0, p.y or 0, p.z or 0) end
+        if m.kind == 'route' then
+          routes[#routes + 1] = { _id = m.id, name = d.name or m.name, target = d.target or 45,
+            baseReward = d.baseReward or 500, bonusPerSecond = d.bonusPerSecond or 25, points = pts }
+        elseif m.kind == 'zone' then
+          zones[#zones + 1] = { _id = m.id, name = d.name or m.name, width = d.width or 8,
+            payoutPer = d.payoutPer or 2, points = pts }
+        end
+      end
+    end
+    rebuildList(ROUTES, routes)
+    rebuildList(DRIFT_ZONES, zones)
+  end)
+end
+
+local function economySaveRoute(r)
+  economyPostRaw('/routes', routePostBody(r), function(err, response) economyLoadMissions() end)
+end
+
+local function economySaveZone(z)
+  economyPostRaw('/routes', zonePostBody(z), function(err, response) economyLoadMissions() end)
+end
+
+local function economyDeleteMission(id)
+  if not id then return end
+  economyPostRaw('/routes/' .. id .. '/delete', '{}', function(err, response) economyLoadMissions() end)
 end
 
 ---------------------------------------------------------------------------
@@ -528,6 +604,7 @@ local function updateEditorHotkeys(car, dt)
     appOpen = not appOpen
     if appOpen then
       economyRefreshCashLeaderboard()
+      economyLoadMissions()
       if drift.active then economyRefreshDriftLeaderboard(drift.zone.name) end
     end
   end
@@ -559,6 +636,7 @@ end
 ---------------------------------------------------------------------------
 
 local idleRefreshTimer = 0
+local missionsLoaded = false
 
 -- Auto-fill the display name from the in-game driver (Steam) name while it's
 -- still the default, so the leaderboard shows real names instead of "Runner".
@@ -578,6 +656,7 @@ function script.update(dt)
   if not car then return end
 
   ensureDisplayName()
+  if not missionsLoaded and economyEnabled() then missionsLoaded = true; economyLoadMissions() end
   updateCheckpoints(car)
   updateDriftZones(car, dt)
   updateEditorHotkeys(car, dt)
@@ -590,6 +669,7 @@ function script.update(dt)
     if idleRefreshTimer > 15 then
       idleRefreshTimer = 0
       economyRefreshCashLeaderboard()
+      economyLoadMissions()
     end
   end
 end
@@ -801,9 +881,10 @@ local function missionsTab()
     ui.textColored('   No routes yet — capture some in the Editor tab.', DIM)
   else
     for i, r in ipairs(ROUTES) do
-      ui.textColored(r.name, WHITE); ui.sameLine(240)
-      ui.textColored(money(r.baseReward) .. ' +bonus', GOLD); ui.sameLine(400)
+      ui.textColored(r.name, WHITE); ui.sameLine(230)
+      ui.textColored(money(r.baseReward) .. ' +bonus', GOLD); ui.sameLine(390)
       if tintBtn('Start##r' .. i, BTN_GO) then startRoute(r); appOpen = false end
+      if r._id then ui.sameLine(); if tintBtn('x##dr' .. r._id, BTN_DANGER) then economyDeleteMission(r._id) end end
     end
   end
   ui.separator()
@@ -812,9 +893,9 @@ local function missionsTab()
     ui.textColored('   No zones yet — capture some in the Editor tab.', DIM)
   else
     for _, z in ipairs(DRIFT_ZONES) do
-      ui.textColored(z.name, WHITE); ui.sameLine(240)
-      ui.textColored('$' .. z.payoutPer .. '/pt', GOLD); ui.sameLine(340)
-      ui.textColored('drive in to start', DIM)
+      ui.textColored(z.name, WHITE); ui.sameLine(230)
+      ui.textColored('$' .. z.payoutPer .. '/pt · drive in', GOLD); ui.sameLine(390)
+      if z._id then if tintBtn('x##dz' .. z._id, BTN_DANGER) then economyDeleteMission(z._id) end end
     end
   end
 end
@@ -888,6 +969,9 @@ local function editorTab()
   ui.sameLine()
   if tintBtn((editor.mode == 'zone' and '[ ZONE ]' or 'ZONE') .. '##emz', editor.mode == 'zone' and BTN_GO or BTN_MUTED) then editor.mode = 'zone' end
   ui.sameLine(); ui.textColored('points: ' .. #editor.points, DIM)
+
+  ui.textColored('name', DIM); ui.sameLine()
+  pcall(function() editor.name = ui.inputText('##rn', editor.name) or editor.name end)
   ui.separator()
 
   if tintBtn('Capture point##ec', BTN_GO) then editorCapture(ac.getCar(0)); editorSetMessage('Captured ' .. #editor.points) end
@@ -902,7 +986,17 @@ local function editorTab()
       else editorSetMessage('Need 2+ points') end
     end
     ui.sameLine()
-    if tintBtn('Copy route##ecp', BTN_INFO) then editorCopyRoute(); editorSetMessage('Copied to clipboard + log') end
+    if tintBtn('Save route##esv', BTN_GO) then
+      if #editor.points < 2 then editorSetMessage('Need 2+ points')
+      elseif not economyEnabled() then editorSetMessage('Economy offline — cannot save')
+      else
+        local nm = editor.name
+        if nm == '' or nm == 'New Route' then nm = 'Route ' .. tostring(os.time() % 100000) end
+        economySaveRoute({ name = nm, target = editor.target, baseReward = editor.baseReward,
+          bonusPerSecond = editor.bonusPerSecond, points = editor.points })
+        editorSetMessage('Saved "' .. nm .. '" — now in Missions')
+      end
+    end
   else
     if tintBtn('Test zone##etz', BTN_INFO) then
       if #editor.points >= 2 then
@@ -910,7 +1004,16 @@ local function editorTab()
       else editorSetMessage('Need 2+ points') end
     end
     ui.sameLine()
-    if tintBtn('Copy zone##ecpz', BTN_INFO) then editorCopyZone(); editorSetMessage('Copied to clipboard + log') end
+    if tintBtn('Save zone##esvz', BTN_GO) then
+      if #editor.points < 2 then editorSetMessage('Need 2+ points')
+      elseif not economyEnabled() then editorSetMessage('Economy offline — cannot save')
+      else
+        local nm = editor.name
+        if nm == '' or nm == 'New Route' then nm = 'Zone ' .. tostring(os.time() % 100000) end
+        economySaveZone({ name = nm, width = editor.width, payoutPer = editor.payoutPer, points = editor.points })
+        editorSetMessage('Saved "' .. nm .. '" — now in Missions')
+      end
+    end
   end
   ui.separator()
   ui.textColored('While driving:  Ctrl+1 capture · Ctrl+2 test · Ctrl+3 copy · Ctrl+4 mode', DIM)
