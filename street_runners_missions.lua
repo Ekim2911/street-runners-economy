@@ -696,6 +696,27 @@ local GREEN3     = rgbm(0.4, 1.0, 0.55, 1.0)
 local GREEN_GLOW = rgbm(0.4, 1.0, 0.55, 0.22)
 local RED3       = rgbm(1.0, 0.3, 0.38, 1.0)
 local RED_GLOW   = rgbm(1.0, 0.3, 0.38, 0.22)
+local CYAN3      = rgbm(0.3, 0.85, 1.0, 1.0)
+local CYAN_GLOW  = rgbm(0.3, 0.85, 1.0, 0.20)
+local YEL3       = rgbm(1.0, 0.95, 0.25, 1.0)
+local YEL_GLOW   = rgbm(1.0, 0.95, 0.25, 0.28)
+
+-- A flat glowing laser bar on the ground across the direction of travel — used
+-- to mark route checkpoints. Bright beams (guaranteed) over a translucent strip
+-- (render.quad when available).
+local function groundLaser(p, dx, dz, ax, az, halfW, col, glow)
+  local y = p.y + 0.05
+  local L = vec3(p.x + ax * halfW, y, p.z + az * halfW)
+  local R = vec3(p.x - ax * halfW, y, p.z - az * halfW)
+  pcall(function()
+    local d = 0.6
+    render.quad(vec3(L.x - dx * d, y, L.z - dz * d), vec3(L.x + dx * d, y, L.z + dz * d),
+      vec3(R.x + dx * d, y, R.z + dz * d), vec3(R.x - dx * d, y, R.z - dz * d), glow)
+  end)
+  render.debugLine(L, R, col)
+  render.debugLine(vec3(L.x + dx * 0.35, y, L.z + dz * 0.35), vec3(R.x + dx * 0.35, y, R.z + dz * 0.35), col)
+  render.debugLine(vec3(L.x - dx * 0.35, y, L.z - dz * 0.35), vec3(R.x - dx * 0.35, y, R.z - dz * 0.35), col)
+end
 
 -- A laser curtain across the road: a translucent glowing plane (if the build
 -- has render.quad) plus bright horizontal beams at a few heights.
@@ -721,12 +742,18 @@ function script.draw3D()
     render.setDepthMode(render.DepthMode.ReadOnlyLessEqual)
 
     for _, route in ipairs(ROUTES) do
-      for i, p in ipairs(route.points) do
-        render.debugSphere(p, i == 1 and 1.6 or 1.2, i == 1 and GREEN3 or rgbm(0.2, 0.8, 0.95, 0.55))
+      local pts = route.points
+      if #pts >= 2 then
+        for i, p in ipairs(pts) do
+          local a, b = (i < #pts) and p or pts[i - 1], (i < #pts) and pts[i + 1] or p
+          local dx, dz = dirXZ(a, b)
+          local ax, az = perpXZ(a, b)
+          local col, glow = CYAN3, CYAN_GLOW
+          if i == 1 then col, glow = GREEN3, GREEN_GLOW end
+          if run.active and run.route == route and run.index == i then col, glow = YEL3, YEL_GLOW end
+          groundLaser(p, dx, dz, ax, az, CONFIG.checkpointRadius, col, glow)
+        end
       end
-    end
-    if run.active then
-      render.debugSphere(run.route.points[run.index], 1.9, rgbm(1, 1, 0, 0.95))
     end
 
     -- Drift zones: just a clean green START gate and red FINISH gate.
