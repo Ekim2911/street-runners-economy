@@ -678,27 +678,77 @@ end
 -- script.draw3D — checkpoint gates & drift corridors
 ---------------------------------------------------------------------------
 
+-- Unit vector in the ground plane perpendicular to a->b.
+local function perpXZ(a, b)
+  local dx, dz = b.x - a.x, b.z - a.z
+  local len = math.sqrt(dx * dx + dz * dz)
+  if len < 0.001 then return 1, 0 end
+  return -dz / len, dx / len
+end
+
+-- A gate (two posts + top/bottom bars + center marker) across the corridor,
+-- marking a definitive start or finish.
+local function drawGate(p, ax, az, halfW, col)
+  local top = 3.5
+  local a = vec3(p.x + ax * halfW, p.y, p.z + az * halfW)
+  local b = vec3(p.x - ax * halfW, p.y, p.z - az * halfW)
+  local at = vec3(a.x, a.y + top, a.z)
+  local bt = vec3(b.x, b.y + top, b.z)
+  render.debugLine(a, b, col)
+  render.debugLine(at, bt, col)
+  render.debugLine(a, at, col)
+  render.debugLine(b, bt, col)
+  render.debugLine(vec3(a.x, a.y + top * 0.5, a.z), vec3(b.x, b.y + top * 0.5, b.z), col)
+  for _, t in ipairs({ 0.33, 0.66 }) do
+    local mx, mz = a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t
+    render.debugLine(vec3(mx, a.y, mz), vec3(mx, a.y + top, mz), col)
+  end
+  render.debugSphere(p, 1.5, col)
+end
+
+local GREEN3 = rgbm(0.2, 1.0, 0.45, 0.95)
+local RED3   = rgbm(1.0, 0.25, 0.25, 0.95)
+local EDGE3  = rgbm(1.0, 0.2, 0.6, 0.55)
+
 function script.draw3D()
   pcall(function()
     render.setDepthMode(render.DepthMode.ReadOnlyLessEqual)
 
     for _, route in ipairs(ROUTES) do
-      for _, p in ipairs(route.points) do
-        render.debugSphere(p, 1.2, rgbm(0.1, 1, 0.4, 0.6))
+      for i, p in ipairs(route.points) do
+        render.debugSphere(p, i == 1 and 1.6 or 1.2, i == 1 and GREEN3 or rgbm(0.2, 0.8, 0.95, 0.55))
       end
     end
     if run.active then
-      render.debugSphere(run.route.points[run.index], 1.6, rgbm(1, 1, 0, 0.9))
+      render.debugSphere(run.route.points[run.index], 1.9, rgbm(1, 1, 0, 0.95))
     end
 
+    -- Drift zones: corridor edges + green start gate + red finish gate.
     for _, zone in ipairs(DRIFT_ZONES) do
-      for i = 1, #zone.points - 1 do
-        render.debugLine(zone.points[i], zone.points[i + 1], rgbm(1, 0.2, 0.6, 0.7))
+      local pts = zone.points
+      if #pts >= 2 then
+        local halfW = (zone.width or 8) / 2
+        for i = 1, #pts - 1 do
+          local ax, az = perpXZ(pts[i], pts[i + 1])
+          render.debugLine(vec3(pts[i].x + ax * halfW, pts[i].y, pts[i].z + az * halfW),
+            vec3(pts[i + 1].x + ax * halfW, pts[i + 1].y, pts[i + 1].z + az * halfW), EDGE3)
+          render.debugLine(vec3(pts[i].x - ax * halfW, pts[i].y, pts[i].z - az * halfW),
+            vec3(pts[i + 1].x - ax * halfW, pts[i + 1].y, pts[i + 1].z - az * halfW), EDGE3)
+          render.debugLine(pts[i], pts[i + 1], rgbm(1, 0.3, 0.7, 0.22))
+        end
+        local sax, saz = perpXZ(pts[1], pts[2])
+        drawGate(pts[1], sax, saz, halfW, GREEN3)
+        local fax, faz = perpXZ(pts[#pts - 1], pts[#pts])
+        drawGate(pts[#pts], fax, faz, halfW, RED3)
+        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 4, pts[1].z), 'START', GREEN3) end)
+        pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 4, pts[#pts].z), 'FINISH', RED3) end)
       end
     end
 
-    for _, p in ipairs(editor.points) do
-      render.debugSphere(p, 1, rgbm(0.2, 0.7, 1, 0.8))
+    -- Editor capture preview: blue nodes connected as you drop them.
+    for i, p in ipairs(editor.points) do
+      render.debugSphere(p, 1, rgbm(0.2, 0.7, 1, 0.85))
+      if i > 1 then render.debugLine(editor.points[i - 1], p, rgbm(0.2, 0.7, 1, 0.5)) end
     end
   end)
 end
