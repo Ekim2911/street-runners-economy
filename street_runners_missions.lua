@@ -701,21 +701,24 @@ local CYAN_GLOW  = rgbm(0.3, 0.85, 1.0, 0.20)
 local YEL3       = rgbm(1.0, 0.95, 0.25, 1.0)
 local YEL_GLOW   = rgbm(1.0, 0.95, 0.25, 0.28)
 
--- A flat glowing laser bar on the ground across the direction of travel — used
--- to mark route checkpoints. Bright beams (guaranteed) over a translucent strip
--- (render.quad when available).
+-- A crisp glowing laser bar on the ground across the direction of travel — a
+-- solid bright core over a soft glow halo that breathes. Used for route
+-- checkpoints. Bright core line is guaranteed; the quad strips need render.quad.
 local function groundLaser(p, dx, dz, ax, az, halfW, col, glow)
   local y = p.y + 0.05
   local L = vec3(p.x + ax * halfW, y, p.z + az * halfW)
   local R = vec3(p.x - ax * halfW, y, p.z - az * halfW)
-  pcall(function()
-    local d = 0.6
-    render.quad(vec3(L.x - dx * d, y, L.z - dz * d), vec3(L.x + dx * d, y, L.z + dz * d),
-      vec3(R.x + dx * d, y, R.z + dz * d), vec3(R.x - dx * d, y, R.z - dz * d), glow)
-  end)
-  render.debugLine(L, R, col)
-  render.debugLine(vec3(L.x + dx * 0.35, y, L.z + dz * 0.35), vec3(R.x + dx * 0.35, y, R.z + dz * 0.35), col)
-  render.debugLine(vec3(L.x - dx * 0.35, y, L.z - dz * 0.35), vec3(R.x - dx * 0.35, y, R.z - dz * 0.35), col)
+  local pulse = 0.7 + 0.3 * math.sin(sessionTime * 3)
+  local function strip(depth, yoff, c)
+    pcall(function()
+      local yy = y + yoff
+      render.quad(vec3(L.x - dx * depth, yy, L.z - dz * depth), vec3(L.x + dx * depth, yy, L.z + dz * depth),
+        vec3(R.x + dx * depth, yy, R.z + dz * depth), vec3(R.x - dx * depth, yy, R.z - dz * depth), c)
+    end)
+  end
+  strip((1.1 + 0.3 * pulse), 0.0, glow) -- breathing soft halo
+  strip(0.16, 0.02, col)                -- crisp solid bright core
+  render.debugLine(L, R, col)           -- guaranteed core line
 end
 
 -- A laser curtain across the road: a translucent glowing plane (if the build
@@ -958,7 +961,9 @@ local function teleportTo(pts)
   if not pts or #pts < 1 then return end
   local p = pts[1]
   local dx, dz = dirXZ(pts[1], pts[2] or pts[1])
-  local ok = pcall(function() physics.setCarPosition(0, vec3(p.x, p.y + 0.4, p.z), vec3(dx, 0, dz)) end)
+  -- face along the route (toward the next point). setCarPosition's direction
+  -- convention points the opposite way, so negate.
+  local ok = pcall(function() physics.setCarPosition(0, vec3(p.x, p.y + 0.4, p.z), vec3(-dx, 0, -dz)) end)
   teleportMsg = ok and 'Teleporting to start...' or 'Teleport not supported on this server'
   teleportMsgUntil = sessionTime + 3
 end
