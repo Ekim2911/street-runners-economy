@@ -678,31 +678,58 @@ end
 -- script.draw3D — checkpoint gates & drift corridors
 ---------------------------------------------------------------------------
 
--- Unit vector in the ground plane perpendicular to a->b.
+-- Ground-plane unit vectors: perpendicular to a->b, and along a->b.
 local function perpXZ(a, b)
   local dx, dz = b.x - a.x, b.z - a.z
   local len = math.sqrt(dx * dx + dz * dz)
   if len < 0.001 then return 1, 0 end
   return -dz / len, dx / len
 end
-
--- A clean rectangular gate across the corridor: two posts, a top bar, and a
--- banner strip near the top where the label sits. Marks a definitive start or
--- finish without any distracting lines between.
-local function drawGate(p, ax, az, halfW, col)
-  local h = 4.0
-  local a = vec3(p.x + ax * halfW, p.y, p.z + az * halfW)      -- left base
-  local b = vec3(p.x - ax * halfW, p.y, p.z - az * halfW)      -- right base
-  local at = vec3(a.x, a.y + h, a.z)
-  local bt = vec3(b.x, b.y + h, b.z)
-  render.debugLine(a, at, col)  -- left post
-  render.debugLine(b, bt, col)  -- right post
-  render.debugLine(at, bt, col) -- top bar
-  render.debugLine(vec3(a.x, a.y + h * 0.78, a.z), vec3(b.x, b.y + h * 0.78, b.z), col) -- banner strip
+local function dirXZ(a, b)
+  local dx, dz = b.x - a.x, b.z - a.z
+  local len = math.sqrt(dx * dx + dz * dz)
+  if len < 0.001 then return 1, 0 end
+  return dx / len, dz / len
 end
 
-local GREEN3 = rgbm(0.2, 1.0, 0.45, 0.95)
-local RED3   = rgbm(1.0, 0.25, 0.25, 0.95)
+-- A vertical "pole": a tight cluster of lines (guaranteed to render, reads as a
+-- solid column) plus, if the build supports render.quad, two crossed filled
+-- glowing slabs on top for a real solid look.
+local function drawPole(base, dx, dz, ax, az, h, col)
+  local d = 0.22
+  render.debugLine(base, vec3(base.x, base.y + h, base.z), col)
+  for _, o in ipairs({ { dx, dz }, { -dx, -dz }, { ax, az }, { -ax, -az } }) do
+    local b = vec3(base.x + o[1] * d, base.y, base.z + o[2] * d)
+    render.debugLine(b, vec3(b.x, b.y + h, b.z), col)
+  end
+  pcall(function()
+    local w = 0.45
+    local function slab(ux, uz)
+      local b1 = vec3(base.x - ux * w, base.y, base.z - uz * w)
+      local b2 = vec3(base.x + ux * w, base.y, base.z + uz * w)
+      local t1 = vec3(b1.x, b1.y + h, b1.z)
+      local t2 = vec3(b2.x, b2.y + h, b2.z)
+      render.quad(b1, b2, t2, t1, col)
+      render.quad(t1, t2, b2, b1, col)
+    end
+    slab(dx, dz); slab(ax, az)
+  end)
+end
+
+-- A gate = two glowing poles at the corridor edges + a top arch bar + a line
+-- across the ground (the start/finish line).
+local function drawGate(p, dx, dz, ax, az, halfW, col)
+  local h = 5.0
+  local pL = vec3(p.x + ax * halfW, p.y, p.z + az * halfW)
+  local pR = vec3(p.x - ax * halfW, p.y, p.z - az * halfW)
+  drawPole(pL, dx, dz, ax, az, h, col)
+  drawPole(pR, dx, dz, ax, az, h, col)
+  render.debugLine(vec3(pL.x, pL.y + h, pL.z), vec3(pR.x, pR.y + h, pR.z), col) -- arch
+  render.debugLine(pL, pR, col)                                                 -- ground line
+end
+
+local GREEN3 = rgbm(0.35, 1.0, 0.5, 0.5)
+local RED3   = rgbm(1.0, 0.3, 0.35, 0.5)
 
 function script.draw3D()
   pcall(function()
@@ -722,12 +749,14 @@ function script.draw3D()
       local pts = zone.points
       if #pts >= 2 then
         local halfW = (zone.width or 8) / 2
+        local sdx, sdz = dirXZ(pts[1], pts[2])
         local sax, saz = perpXZ(pts[1], pts[2])
-        drawGate(pts[1], sax, saz, halfW, GREEN3)
+        drawGate(pts[1], sdx, sdz, sax, saz, halfW, GREEN3)
+        local fdx, fdz = dirXZ(pts[#pts - 1], pts[#pts])
         local fax, faz = perpXZ(pts[#pts - 1], pts[#pts])
-        drawGate(pts[#pts], fax, faz, halfW, RED3)
-        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 4.3, pts[1].z), 'START', GREEN3) end)
-        pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 4.3, pts[#pts].z), 'FINISH', RED3) end)
+        drawGate(pts[#pts], fdx, fdz, fax, faz, halfW, RED3)
+        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 5.4, pts[1].z), 'START', rgbm(0.35, 1, 0.5, 1)) end)
+        pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 5.4, pts[#pts].z), 'FINISH', rgbm(1, 0.3, 0.35, 1)) end)
       end
     end
 
