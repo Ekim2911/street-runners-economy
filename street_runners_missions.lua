@@ -721,23 +721,32 @@ local function groundLaser(p, dx, dz, ax, az, halfW, col, glow)
   render.debugLine(L, R, col)           -- guaranteed core line
 end
 
--- A laser curtain across the road: a translucent glowing plane (if the build
--- has render.quad) plus bright horizontal beams at a few heights.
-local function drawGate(p, ax, az, halfW, beamCol, glowCol)
-  local h = 1.5
+-- Zone gate: the same crisp ground laser as route checkpoints, plus a breathing
+-- vertical glow curtain rising from it to mark it as a start/finish line.
+local function drawGate(p, dx, dz, ax, az, halfW, beamCol, glowCol)
+  local y = p.y + 0.05
   local Lx, Lz = p.x + ax * halfW, p.z + az * halfW
   local Rx, Rz = p.x - ax * halfW, p.z - az * halfW
+  local L = vec3(Lx, y, Lz)
+  local R = vec3(Rx, y, Rz)
+  local pulse = 0.7 + 0.3 * math.sin(sessionTime * 3)
   pcall(function()
-    local L = vec3(Lx, p.y + 0.04, Lz)
-    local R = vec3(Rx, p.y + 0.04, Rz)
+    local h = 1.5 + 0.25 * pulse
     local Lt = vec3(Lx, p.y + h, Lz)
     local Rt = vec3(Rx, p.y + h, Rz)
     render.quad(L, R, Rt, Lt, glowCol)
     render.quad(Lt, Rt, R, L, glowCol)
   end)
-  for _, yy in ipairs({ 0.05, 0.55, 1.05, 1.5 }) do
-    render.debugLine(vec3(Lx, p.y + yy, Lz), vec3(Rx, p.y + yy, Rz), beamCol)
+  local function strip(depth, yoff, c)
+    pcall(function()
+      local yy = p.y + yoff
+      render.quad(vec3(Lx - dx * depth, yy, Lz - dz * depth), vec3(Lx + dx * depth, yy, Lz + dz * depth),
+        vec3(Rx + dx * depth, yy, Rz + dz * depth), vec3(Rx - dx * depth, yy, Rz - dz * depth), c)
+    end)
   end
+  strip((1.1 + 0.3 * pulse), 0.03, glowCol) -- breathing ground halo
+  strip(0.16, 0.05, beamCol)                -- crisp solid core
+  render.debugLine(L, R, beamCol)
 end
 
 function script.draw3D()
@@ -764,10 +773,12 @@ function script.draw3D()
       local pts = zone.points
       if #pts >= 2 then
         local halfW = (zone.width or 8) / 2
+        local sdx, sdz = dirXZ(pts[1], pts[2])
         local sax, saz = perpXZ(pts[1], pts[2])
-        drawGate(pts[1], sax, saz, halfW, GREEN3, GREEN_GLOW)
+        drawGate(pts[1], sdx, sdz, sax, saz, halfW, GREEN3, GREEN_GLOW)
+        local fdx, fdz = dirXZ(pts[#pts - 1], pts[#pts])
         local fax, faz = perpXZ(pts[#pts - 1], pts[#pts])
-        drawGate(pts[#pts], fax, faz, halfW, RED3, RED_GLOW)
+        drawGate(pts[#pts], fdx, fdz, fax, faz, halfW, RED3, RED_GLOW)
         pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 1.9, pts[1].z), 'START', GREEN3) end)
         pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 1.9, pts[#pts].z), 'FINISH', RED3) end)
       end
