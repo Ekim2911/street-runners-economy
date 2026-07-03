@@ -692,44 +692,54 @@ local function dirXZ(a, b)
   return dx / len, dz / len
 end
 
--- A vertical "pole": a tight cluster of lines (guaranteed to render, reads as a
--- solid column) plus, if the build supports render.quad, two crossed filled
--- glowing slabs on top for a real solid look.
-local function drawPole(base, dx, dz, ax, az, h, col)
-  local d = 0.22
-  render.debugLine(base, vec3(base.x, base.y + h, base.z), col)
-  for _, o in ipairs({ { dx, dz }, { -dx, -dz }, { ax, az }, { -ax, -az } }) do
-    local b = vec3(base.x + o[1] * d, base.y, base.z + o[2] * d)
-    render.debugLine(b, vec3(b.x, b.y + h, b.z), col)
+local function lerp3(a, b, t)
+  return vec3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t)
+end
+
+-- A truss between chord p1->p2 and a parallel chord offset by (ox,oy,oz):
+-- two chords + vertical web members + diagonal braces = a lattice beam/tower.
+-- Trusses are meant to be thin members, so debug lines read as real structure.
+local function truss(p1, p2, ox, oy, oz, segs, col)
+  local q1 = vec3(p1.x + ox, p1.y + oy, p1.z + oz)
+  local q2 = vec3(p2.x + ox, p2.y + oy, p2.z + oz)
+  render.debugLine(p1, p2, col)
+  render.debugLine(q1, q2, col)
+  for i = 0, segs do
+    local t = i / segs
+    render.debugLine(lerp3(p1, p2, t), lerp3(q1, q2, t), col)
+    if i < segs then render.debugLine(lerp3(p1, p2, t), lerp3(q1, q2, (i + 1) / segs), col) end
   end
-  pcall(function()
-    local w = 0.45
-    local function slab(ux, uz)
-      local b1 = vec3(base.x - ux * w, base.y, base.z - uz * w)
-      local b2 = vec3(base.x + ux * w, base.y, base.z + uz * w)
-      local t1 = vec3(b1.x, b1.y + h, b1.z)
-      local t2 = vec3(b2.x, b2.y + h, b2.z)
-      render.quad(b1, b2, t2, t1, col)
-      render.quad(t1, t2, b2, b1, col)
-    end
-    slab(dx, dz); slab(ax, az)
-  end)
 end
 
--- A gate = two glowing poles at the corridor edges + a top arch bar + a line
--- across the ground (the start/finish line).
+-- Checkered start/finish line across the corridor (filled quads if the build
+-- has render.quad; harmless no-op otherwise).
+local function checkeredGround(L, R, dx, dz)
+  local n, depth = 10, 1.3
+  for i = 0, n - 1 do
+    local a = lerp3(L, R, i / n)
+    local b = lerp3(L, R, (i + 1) / n)
+    local c = vec3(b.x + dx * depth, b.y + 0.03, b.z + dz * depth)
+    local d = vec3(a.x + dx * depth, a.y + 0.03, a.z + dz * depth)
+    local qc = (i % 2 == 0) and rgbm(1, 1, 1, 0.85) or rgbm(0.03, 0.03, 0.03, 0.85)
+    pcall(function() render.quad(a, b, c, d, qc); render.quad(d, c, b, a, qc) end)
+  end
+end
+
+-- A race gantry: two lattice towers + a trussed top beam + a checkered line.
 local function drawGate(p, dx, dz, ax, az, halfW, col)
-  local h = 5.0
-  local pL = vec3(p.x + ax * halfW, p.y, p.z + az * halfW)
-  local pR = vec3(p.x - ax * halfW, p.y, p.z - az * halfW)
-  drawPole(pL, dx, dz, ax, az, h, col)
-  drawPole(pR, dx, dz, ax, az, h, col)
-  render.debugLine(vec3(pL.x, pL.y + h, pL.z), vec3(pR.x, pR.y + h, pR.z), col) -- arch
-  render.debugLine(pL, pR, col)                                                 -- ground line
+  local H, bh, td = 5.5, 0.7, 0.5
+  local L = vec3(p.x + ax * halfW, p.y, p.z + az * halfW)
+  local R = vec3(p.x - ax * halfW, p.y, p.z - az * halfW)
+  local Lt = vec3(L.x, L.y + H, L.z)
+  local Rt = vec3(R.x, R.y + H, R.z)
+  truss(L, Lt, dx * td, 0, dz * td, 6, col)                                  -- left tower
+  truss(R, Rt, dx * td, 0, dz * td, 6, col)                                  -- right tower
+  truss(Lt, Rt, 0, -bh, 0, math.max(6, math.floor(halfW * 2 / 1.5)), col)   -- top beam
+  checkeredGround(L, R, dx, dz)
 end
 
-local GREEN3 = rgbm(0.35, 1.0, 0.5, 0.5)
-local RED3   = rgbm(1.0, 0.3, 0.35, 0.5)
+local GREEN3 = rgbm(0.35, 1.0, 0.5, 0.9)
+local RED3   = rgbm(1.0, 0.3, 0.35, 0.9)
 
 function script.draw3D()
   pcall(function()
@@ -755,8 +765,8 @@ function script.draw3D()
         local fdx, fdz = dirXZ(pts[#pts - 1], pts[#pts])
         local fax, faz = perpXZ(pts[#pts - 1], pts[#pts])
         drawGate(pts[#pts], fdx, fdz, fax, faz, halfW, RED3)
-        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 5.4, pts[1].z), 'START', rgbm(0.35, 1, 0.5, 1)) end)
-        pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 5.4, pts[#pts].z), 'FINISH', rgbm(1, 0.3, 0.35, 1)) end)
+        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 6.3, pts[1].z), 'START', rgbm(0.35, 1, 0.5, 1)) end)
+        pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 6.3, pts[#pts].z), 'FINISH', rgbm(1, 0.3, 0.35, 1)) end)
       end
     end
 
