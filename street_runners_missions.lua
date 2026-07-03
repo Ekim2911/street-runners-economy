@@ -950,15 +950,39 @@ end
 -- App tabs
 ---------------------------------------------------------------------------
 
+-- Best-effort teleport to a mission's first point, facing the second. Online
+-- scripts can't always move the car (server anti-cheat), so this is wrapped
+-- and reports whether the call was even accepted.
+local teleportMsg, teleportMsgUntil = '', -1
+local function teleportTo(pts)
+  if not pts or #pts < 1 then return end
+  local p = pts[1]
+  local dx, dz = dirXZ(pts[1], pts[2] or pts[1])
+  local ok = pcall(function() physics.setCarPosition(0, vec3(p.x, p.y + 0.4, p.z), vec3(dx, 0, dz)) end)
+  teleportMsg = ok and 'Teleporting to start...' or 'Teleport not supported on this server'
+  teleportMsgUntil = sessionTime + 3
+end
+
 local function missionsTab()
+  if run.active and run.route then
+    ui.textColored(string.format('● ACTIVE  %s   CP %d/%d   %.1fs', run.route.name, run.index, #run.route.points, sessionTime - run.startTime), YEL3)
+    ui.sameLine(); if tintBtn('Cancel##cxr', BTN_DANGER) then run.active = false; run.route = nil end
+    accentSep(YEL3)
+  elseif drift.active and drift.zone then
+    ui.textColored(string.format('● DRIFTING  %s   score %s', drift.zone.name, comma(drift.score)), MAGENTA)
+    accentSep(MAGENTA)
+  end
+
   ui.textColored('» ROUTES', CYAN)
   if #ROUTES == 0 then
     ui.textColored('   No routes yet — capture some in the Editor tab.', DIM)
   else
     for i, r in ipairs(ROUTES) do
-      ui.textColored(r.name, WHITE); ui.sameLine(230)
-      ui.textColored(money(r.baseReward) .. ' +bonus', GOLD); ui.sameLine(390)
+      local active = run.active and run.route == r
+      ui.textColored((active and '● ' or '') .. r.name, active and YEL3 or WHITE); ui.sameLine(230)
+      ui.textColored(money(r.baseReward) .. ' +bonus', GOLD); ui.sameLine(345)
       if tintBtn('Start##r' .. i, BTN_GO) then startRoute(r); appOpen = false end
+      ui.sameLine(); if tintBtn('TP##tpr' .. i, BTN_INFO) then teleportTo(r.points) end
       if r._id then ui.sameLine(); if tintBtn('x##dr' .. r._id, BTN_DANGER) then economyDeleteMission(r._id) end end
     end
   end
@@ -967,12 +991,15 @@ local function missionsTab()
   if #DRIFT_ZONES == 0 then
     ui.textColored('   No zones yet — capture some in the Editor tab.', DIM)
   else
-    for _, z in ipairs(DRIFT_ZONES) do
-      ui.textColored(z.name, WHITE); ui.sameLine(230)
-      ui.textColored('$' .. z.payoutPer .. '/pt · drive in', GOLD); ui.sameLine(390)
-      if z._id then if tintBtn('x##dz' .. z._id, BTN_DANGER) then economyDeleteMission(z._id) end end
+    for i, z in ipairs(DRIFT_ZONES) do
+      local active = drift.active and drift.zone == z
+      ui.textColored((active and '● ' or '') .. z.name, active and MAGENTA or WHITE); ui.sameLine(230)
+      ui.textColored('$' .. z.payoutPer .. '/pt', GOLD); ui.sameLine(345)
+      if tintBtn('TP##tpz' .. i, BTN_INFO) then teleportTo(z.points) end
+      if z._id then ui.sameLine(); if tintBtn('x##dz' .. z._id, BTN_DANGER) then economyDeleteMission(z._id) end end
     end
   end
+  if sessionTime < teleportMsgUntil then ui.textColored(teleportMsg, CYAN) end
 end
 
 local function shopTab()
