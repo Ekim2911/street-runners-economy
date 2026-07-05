@@ -43,6 +43,19 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_drift_runs_zone_player
     ON drift_runs (zone_id, player_id, score DESC);
 
+  CREATE TABLE IF NOT EXISTS hotlap_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    route_id TEXT NOT NULL,
+    route_name TEXT NOT NULL,
+    player_id TEXT NOT NULL,
+    player_name TEXT NOT NULL,
+    time_ms INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_hotlap_runs_route_player
+    ON hotlap_runs (route_id, player_id, time_ms ASC);
+
   CREATE TABLE IF NOT EXISTS missions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,        -- 'route' | 'zone'
@@ -83,6 +96,20 @@ const zoneLeaderboard = db.prepare(`
   LIMIT ?
 `);
 
+const insertHotlapRun = db.prepare(`
+  INSERT INTO hotlap_runs (route_id, route_name, player_id, player_name, time_ms, created_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+// Best (fastest) lap per player for a route, ranked ascending.
+const hotlapLeaderboard = db.prepare(`
+  SELECT player_name AS playerName, MIN(time_ms) AS timeMs
+  FROM hotlap_runs
+  WHERE route_id = ?
+  GROUP BY player_id
+  ORDER BY timeMs ASC
+  LIMIT ?
+`);
+
 const listMissions = db.prepare('SELECT id, kind, name, data FROM missions ORDER BY kind, name');
 // Upsert by (kind, name): a re-saved route replaces the old one.
 const upsertMission = db.prepare(`
@@ -90,6 +117,26 @@ const upsertMission = db.prepare(`
   ON CONFLICT(kind, name) DO UPDATE SET data = excluded.data
 `);
 const deleteMission = db.prepare('DELETE FROM missions WHERE id = ?');
+
+// Seed canonical, generated routes (e.g. the H1 Hotlap) on startup. Upserted so
+// a redeploy with a regenerated seed updates the course; edit the JSON + redeploy
+// to tune it.
+function seedMissions() {
+  for (const file of ['seed_h1_hotlap.json']) {
+    try {
+      const p = path.join(__dirname, file);
+      if (!fs.existsSync(p)) continue;
+      const seed = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (seed && seed.name && seed.data && Array.isArray(seed.data.points)) {
+        upsertMission.run(seed.kind || 'route', String(seed.name), JSON.stringify(seed.data), Date.now());
+        console.log(`Seeded ${seed.kind || 'route'}: ${seed.name} (${seed.data.points.length} points)`);
+      }
+    } catch (e) {
+      console.error(`seed ${file} failed:`, e.message);
+    }
+  }
+}
+seedMissions();
 
 // Clamp a client-supplied limit to a sane range. Guards against a negative
 // value, which SQLite would treat as "no limit" and dump the whole table.
@@ -206,6 +253,27 @@ app.post('/drift/runs', (req, res) => {
 
 app.get('/drift/leaderboard/:zoneId', (req, res) => {
   res.json(zoneLeaderboard.all(req.params.zoneId, parseLimit(req.query.limit)));
+});
+
+app.post('/hotlap/runs', (req, res) => {
+  const { routeId, routeName, playerId, playerName } = req.body || {};
+  const timeMs = Number((req.body || {}).timeMs);
+  if (!routeId || !playerId || !Number.isFinite(timeMs) || timeMs <= 0) {
+    return res.status(400).json({ error: 'routeId, playerId, and positive numeric timeMs are required' });
+  }
+  insertHotlapRun.run(
+    routeId,
+    routeName || routeId,
+    playerId,
+    playerName || 'Runner',
+    Math.round(timeMs),
+    Date.now()
+  );
+  res.status(201).json({ ok: true });
+});
+
+app.get('/hotlap/leaderboard/:routeId', (req, res) => {
+  res.json(hotlapLeaderboard.all(req.params.routeId, parseLimit(req.query.limit)));
 });
 
 // --- Server-managed missions (routes + drift zones) ---

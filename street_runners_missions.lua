@@ -173,7 +173,7 @@ end
 -- Economy sync (wrapped in pcall — falls back to local-only silently)
 ---------------------------------------------------------------------------
 
-local economy = { leaderboardCash = {}, driftLeaderboards = {} }
+local economy = { leaderboardCash = {}, driftLeaderboards = {}, hotlapLeaderboards = {} }
 
 local function economyEnabled()
   return CONFIG.economyUrl ~= nil and CONFIG.economyUrl ~= ''
@@ -301,6 +301,26 @@ local function economyRefreshDriftLeaderboard(zoneName)
   end)
 end
 
+local function economyReportHotlap(route, timeMs)
+  economyPost('/hotlap/runs',
+    {
+      routeId = route.name,
+      routeName = route.name,
+      playerId = storage.playerId,
+      playerName = storage.playerName,
+      timeMs = timeMs,
+    },
+    function(err, response) end)
+end
+
+local function economyRefreshHotlapLeaderboard(routeName)
+  economyGet('/hotlap/leaderboard/' .. urlEncode(routeName) .. '?limit=10', function(err, response)
+    if err or not response then return end
+    local data = safeJsonParse(response.body)
+    if data then economy.hotlapLeaderboards[routeName] = data end
+  end)
+end
+
 -- Replace a list's contents in place (keeps the table reference the gameplay
 -- loops hold).
 local function rebuildList(tbl, items)
@@ -324,7 +344,8 @@ local function economyLoadMissions()
         for _, p in ipairs(d.points) do pts[#pts + 1] = vec3(p.x or 0, p.y or 0, p.z or 0) end
         if m.kind == 'route' then
           routes[#routes + 1] = { _id = m.id, name = d.name or m.name, target = d.target or 45,
-            baseReward = d.baseReward or 500, bonusPerSecond = d.bonusPerSecond or 25, points = pts }
+            baseReward = d.baseReward or 500, bonusPerSecond = d.bonusPerSecond or 25, points = pts,
+            hotlap = d.hotlap == true, checkpointRadius = tonumber(d.checkpointRadius) }
         elseif m.kind == 'zone' then
           zones[#zones + 1] = { _id = m.id, name = d.name or m.name, width = d.width or 8,
             payoutPer = d.payoutPer or 2, points = pts }
@@ -398,11 +419,21 @@ local function startRoute(route)
   run.startTime = sessionTime
 end
 
+-- Set by finishRoute for a hotlap so the HUD/leaderboard can flash the result.
+local lastHotlap = { name = nil, timeMs = 0, at = -100 }
+
 local function finishRoute()
+  local route = run.route
   local elapsed = sessionTime - run.startTime
-  local bonus = math.max(0, (run.route.target - elapsed) * run.route.bonusPerSecond)
-  local payout = run.route.baseReward + math.floor(bonus)
-  economyEarn(payout, 'checkpoint:' .. run.route.name)
+  local bonus = math.max(0, (route.target - elapsed) * route.bonusPerSecond)
+  local payout = route.baseReward + math.floor(bonus)
+  economyEarn(payout, 'checkpoint:' .. route.name)
+  if route.hotlap then
+    local timeMs = math.floor(elapsed * 1000)
+    economyReportHotlap(route, timeMs)
+    economyRefreshHotlapLeaderboard(route.name)
+    lastHotlap = { name = route.name, timeMs = timeMs, at = sessionTime }
+  end
   run.active = false
   run.route = nil
 end
@@ -479,10 +510,14 @@ end
 local function updateCheckpoints(car)
   if not run.active then return end
   local target = run.route.points[run.index]
-  if dist2D(car.position, target) <= CONFIG.checkpointRadius then
+  if dist2D(car.position, target) <= (run.route.checkpointRadius or CONFIG.checkpointRadius) then
     if run.index >= #run.route.points then
       finishRoute()
     else
+      -- Hotlap: the clock starts when you actually cross the start line
+      -- (checkpoint 1), not when you pressed Start, so driving up to the line
+      -- doesn't count against the lap.
+      if run.route.hotlap and run.index == 1 then run.startTime = sessionTime end
       run.index = run.index + 1
     end
   end
@@ -807,7 +842,7 @@ function script.draw3D()
           local col, glow = CYAN3, CYAN_GLOW
           if i == 1 then col, glow = GREEN3, GREEN_GLOW end
           if run.active and run.route == route and run.index == i then col, glow = YEL3, YEL_GLOW end
-          groundLaser(p, dx, dz, ax, az, CONFIG.checkpointRadius, col, glow)
+          groundLaser(p, dx, dz, ax, az, route.checkpointRadius or CONFIG.checkpointRadius, col, glow)
         end
       end
     end
@@ -870,6 +905,12 @@ local function money(n)
   local c = comma(n)
   if c:sub(1, 1) == '-' then return '-$' .. c:sub(2) end
   return '$' .. c
+end
+
+-- Milliseconds -> M:SS.mmm lap time.
+local function fmtLapTime(ms)
+  ms = math.max(0, math.floor(tonumber(ms) or 0))
+  return string.format('%d:%02d.%03d', math.floor(ms / 60000), math.floor((ms % 60000) / 1000), ms % 1000)
 end
 
 -- Bar meter out of solid/light blocks.
@@ -982,8 +1023,17 @@ local function drawMainHUD()
 
   if run.active then
     ui.separator()
-    ui.textColored(string.format('CHECKPOINT  %d / %d', run.index, #run.route.points), CYAN)
-    ui.textColored(string.format('TIME  %.1fs', sessionTime - run.startTime), WHITE)
+    if run.route.hotlap then
+      ui.textColored(string.format('HOTLAP  %s', run.route.name), CYAN)
+      ui.textColored(string.format('CP %d / %d   %s', run.index, #run.route.points,
+        fmtLapTime((sessionTime - run.startTime) * 1000)), WHITE)
+    else
+      ui.textColored(string.format('CHECKPOINT  %d / %d', run.index, #run.route.points), CYAN)
+      ui.textColored(string.format('TIME  %.1fs', sessionTime - run.startTime), WHITE)
+    end
+  elseif lastHotlap.name and sessionTime - lastHotlap.at < 6 then
+    ui.separator()
+    ui.textColored(string.format('LAP DONE  %s', fmtLapTime(lastHotlap.timeMs)), NEON)
   end
 
   if drift.active then
@@ -1094,6 +1144,9 @@ local function leaderboardTab()
     lbLastRefresh = sessionTime
     economyRefreshCashLeaderboard()
     if drift.active then economyRefreshDriftLeaderboard(drift.zone.name) end
+    for _, r in ipairs(ROUTES) do
+      if r.hotlap then economyRefreshHotlapLeaderboard(r.name) end
+    end
   end
   if drift.active then
     ui.textColored('» ZONE BEST · ' .. drift.zone.name:upper(), MAGENTA)
@@ -1121,6 +1174,25 @@ local function leaderboardTab()
           ui.textColored('«' .. titleDisplayName(row.title) .. '»', GOLD)
         end
         ui.sameLine(420); ui.textColored(money(row.balance or 0), NEON)
+      end
+    end
+  end
+
+  -- Hotlap boards (fastest lap per player), one section per hotlap route.
+  for _, r in ipairs(ROUTES) do
+    if r.hotlap then
+      ui.separator()
+      ui.textColored('» ' .. tostring(r.name):upper() .. ' · BEST LAP', CYAN)
+      ui.separator()
+      local rows = economy.hotlapLeaderboards[r.name] or {}
+      if #rows == 0 then
+        ui.textColored(economyEnabled() and 'No laps yet.' or 'Economy offline.', DIM)
+      else
+        for i, row in ipairs(rows) do
+          ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine(40)
+          ui.textColored(row.playerName or '???', WHITE); ui.sameLine(300)
+          ui.textColored(fmtLapTime(row.timeMs or 0), NEON)
+        end
       end
     end
   end
