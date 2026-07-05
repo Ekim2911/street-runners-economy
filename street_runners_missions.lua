@@ -721,32 +721,76 @@ local function groundLaser(p, dx, dz, ax, az, halfW, col, glow)
   render.debugLine(L, R, col)           -- guaranteed core line
 end
 
--- Zone gate: the same crisp ground laser as route checkpoints, plus a breathing
--- vertical glow curtain rising from it to mark it as a start/finish line.
-local function drawGate(p, dx, dz, ax, az, halfW, beamCol, glowCol)
-  local y = p.y + 0.05
+-- Zone gate: a laser light-curtain across the road. Built from raw r,g,b so we
+-- can synthesize many alphas without reading rgbm fields (unreliable in CSP).
+-- Layers: a vertical gradient that fades to nothing at the top (reads as light,
+-- not a wall), bright edge posts, a vertical laser-beam fence, a scan line that
+-- sweeps up it, and a crisp ground core.
+local function drawGate(p, dx, dz, ax, az, halfW, r, g, b)
   local Lx, Lz = p.x + ax * halfW, p.z + az * halfW
   local Rx, Rz = p.x - ax * halfW, p.z - az * halfW
-  local L = vec3(Lx, y, Lz)
-  local R = vec3(Rx, y, Rz)
-  local pulse = 0.7 + 0.3 * math.sin(sessionTime * 3)
-  pcall(function()
-    local h = 1.5 + 0.25 * pulse
-    local Lt = vec3(Lx, p.y + h, Lz)
-    local Rt = vec3(Rx, p.y + h, Rz)
-    render.quad(L, R, Rt, Lt, glowCol)
-    render.quad(Lt, Rt, R, L, glowCol)
-  end)
-  local function strip(depth, yoff, c)
+  local by, t = p.y, sessionTime
+  local topH  = 2.8
+  local pulse = 0.5 + 0.5 * math.sin(t * 2.5)
+  local br, bg, bb = math.min(1, r + 0.35), math.min(1, g + 0.35), math.min(1, b + 0.35)
+
+  -- full-width vertical band between heights h0..h1 (double-sided)
+  local function band(h0, h1, col)
     pcall(function()
-      local yy = p.y + yoff
-      render.quad(vec3(Lx - dx * depth, yy, Lz - dz * depth), vec3(Lx + dx * depth, yy, Lz + dz * depth),
-        vec3(Rx + dx * depth, yy, Rz + dz * depth), vec3(Rx - dx * depth, yy, Rz - dz * depth), c)
+      local a   = vec3(Lx, by + h0, Lz)
+      local q   = vec3(Rx, by + h0, Rz)
+      local c   = vec3(Rx, by + h1, Rz)
+      local d   = vec3(Lx, by + h1, Lz)
+      render.quad(a, q, c, d, col)
+      render.quad(d, c, q, a, col)
     end)
   end
-  strip((1.1 + 0.3 * pulse), 0.03, glowCol) -- breathing ground halo
-  strip(0.16, 0.05, beamCol)                -- crisp solid core
-  render.debugLine(L, R, beamCol)
+
+  -- 1) gradient curtain: bright at the base, fading to transparent at the top
+  local N = 6
+  for i = 0, N - 1 do
+    local f0   = i / N
+    local fade = (1 - f0) ^ 1.8
+    band(0.03 + f0 * topH, 0.03 + ((i + 1) / N) * topH, rgbm(r, g, b, 0.34 * fade))
+  end
+
+  -- 2) scan line: a bright thin beam sweeping up and down the curtain
+  local scan = ((math.sin(t * 1.3) + 1) * 0.5) * (topH - 0.2)
+  band(0.03 + scan, 0.15 + scan, rgbm(br, bg, bb, 0.65))
+
+  -- 3) bright vertical edge posts (thin quads framing the gate)
+  local function post(px, pz)
+    pcall(function()
+      local ox, oz = dx * 0.12, dz * 0.12
+      render.quad(vec3(px - ox, by + 0.02, pz - oz), vec3(px + ox, by + 0.02, pz + oz),
+        vec3(px + ox, by + topH, pz + oz), vec3(px - ox, by + topH, pz - oz), rgbm(br, bg, bb, 0.9))
+    end)
+  end
+  post(Lx, Lz); post(Rx, Rz)
+
+  -- 4) vertical laser-beam fence across the width (breathes with the pulse)
+  local beams = 6
+  for i = 0, beams do
+    local f  = i / beams
+    local bx = Lx + (Rx - Lx) * f
+    local bz = Lz + (Rz - Lz) * f
+    pcall(function()
+      render.debugLine(vec3(bx, by + 0.02, bz),
+        vec3(bx, by + topH * (0.72 + 0.22 * pulse), bz), rgbm(r, g, b, 0.5))
+    end)
+  end
+
+  -- 5) crisp ground core: soft halo strip + bright bar + guaranteed line
+  local function strip(depth, yoff, col)
+    pcall(function()
+      local yy = by + yoff
+      render.quad(vec3(Lx - dx * depth, yy, Lz - dz * depth), vec3(Lx + dx * depth, yy, Lz + dz * depth),
+        vec3(Rx + dx * depth, yy, Rz + dz * depth), vec3(Rx - dx * depth, yy, Rz - dz * depth), col)
+    end)
+  end
+  strip(0.5,  0.02, rgbm(r, g, b, 0.22))       -- breathing ground halo
+  strip(0.14, 0.05, rgbm(br, bg, bb, 1.0))     -- crisp solid core
+  render.debugLine(vec3(Lx, by + 0.05, Lz), vec3(Rx, by + 0.05, Rz), rgbm(br, bg, bb, 1.0))
 end
 
 function script.draw3D()
@@ -775,10 +819,10 @@ function script.draw3D()
         local halfW = (zone.width or 8) / 2
         local sdx, sdz = dirXZ(pts[1], pts[2])
         local sax, saz = perpXZ(pts[1], pts[2])
-        drawGate(pts[1], sdx, sdz, sax, saz, halfW, GREEN3, GREEN_GLOW)
+        drawGate(pts[1], sdx, sdz, sax, saz, halfW, 0.45, 1.0, 0.55)   -- green START
         local fdx, fdz = dirXZ(pts[#pts - 1], pts[#pts])
         local fax, faz = perpXZ(pts[#pts - 1], pts[#pts])
-        drawGate(pts[#pts], fdx, fdz, fax, faz, halfW, RED3, RED_GLOW)
+        drawGate(pts[#pts], fdx, fdz, fax, faz, halfW, 1.0, 0.32, 0.40) -- red FINISH
         pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 1.9, pts[1].z), 'START', GREEN3) end)
         pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 1.9, pts[#pts].z), 'FINISH', RED3) end)
       end
