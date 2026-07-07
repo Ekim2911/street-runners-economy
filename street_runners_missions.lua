@@ -523,6 +523,35 @@ local function updateCheckpoints(car)
   end
 end
 
+-- Auto-start a hotlap the instant you physically cross its start line — no need
+-- to press Start. Detected as a proper plane crossing (behind → in front of the
+-- line, within the road width) rather than a fat proximity radius, so the timer
+-- begins exactly at the visible line. Skipped while a run is already going (so a
+-- lap-closing crossing finishes instead of re-triggering).
+local hotlapPrevSide = {}   -- per route: last signed distance in front of the start line
+local function updateHotlapAutostart(car)
+  if drift.active then return end
+  for _, route in ipairs(ROUTES) do
+    if route.hotlap and #route.points >= 2 then
+      local p1, p2 = route.points[1], route.points[2]
+      local ddx, ddz = p2.x - p1.x, p2.z - p1.z
+      local len = math.sqrt(ddx * ddx + ddz * ddz)
+      if len < 0.001 then len = 1 end
+      local fdx, fdz = ddx / len, ddz / len                 -- forward along the track
+      local ox, oz = car.position.x - p1.x, car.position.z - p1.z
+      local fwd = ox * fdx + oz * fdz                        -- signed distance in front of line
+      local lat = math.abs(ox * (-fdz) + oz * fdx)           -- distance from the line's center
+      local r = route.checkpointRadius or CONFIG.checkpointRadius
+      local key = route._id or route.name
+      local prev = hotlapPrevSide[key]
+      if not run.active and prev ~= nil and prev < 0 and fwd >= 0 and lat <= r then
+        startRoute(route)                                     -- crossed forward over the line
+      end
+      hotlapPrevSide[key] = fwd
+    end
+  end
+end
+
 ---------------------------------------------------------------------------
 -- Editor (route + zone capture, shared buffer)
 ---------------------------------------------------------------------------
@@ -692,6 +721,7 @@ function script.update(dt)
 
   ensureDisplayName()
   if not missionsLoaded and economyEnabled() then missionsLoaded = true; economyLoadMissions() end
+  updateHotlapAutostart(car)
   updateCheckpoints(car)
   updateDriftZones(car, dt)
   updateEditorHotkeys(car, dt)
@@ -1198,14 +1228,24 @@ end
 -- Best-effort teleport to a mission's first point, facing the second. Online
 -- scripts can't always move the car (server anti-cheat), so this is wrapped
 -- and reports whether the call was even accepted.
+local TP_BACK = 0.6        -- metres to sit behind the start line (~2 ft) so you cross it on launch
+local TP_LANE_SIGN = 1     -- which side is the "far right" lane; flip to -1 if it lands on the left
 local teleportMsg, teleportMsgUntil = '', -1
-local function teleportTo(pts)
+local function teleportTo(pts, radius)
   if not pts or #pts < 1 then return end
   local p = pts[1]
   local dx, dz = dirXZ(pts[1], pts[2] or pts[1])
+  local ax, az = perpXZ(pts[1], pts[2] or pts[1])
+  local px, py, pz = p.x, p.y + 0.4, p.z
+  if radius then
+    -- drop into the far-right lane, a bit behind the line
+    local lane = math.max(0, radius - 2)
+    px = px + ax * lane * TP_LANE_SIGN - dx * TP_BACK
+    pz = pz + az * lane * TP_LANE_SIGN - dz * TP_BACK
+  end
   -- face along the route (toward the next point). setCarPosition's direction
   -- convention points the opposite way, so negate.
-  local ok = pcall(function() physics.setCarPosition(0, vec3(p.x, p.y + 0.4, p.z), vec3(-dx, 0, -dz)) end)
+  local ok = pcall(function() physics.setCarPosition(0, vec3(px, py, pz), vec3(-dx, 0, -dz)) end)
   teleportMsg = ok and 'Teleporting to start...' or 'Teleport not supported on this server'
   teleportMsgUntil = sessionTime + 3
 end
@@ -1229,7 +1269,7 @@ local function missionsTab()
       ui.textColored((active and '● ' or '') .. r.name, active and YEL3 or WHITE); ui.sameLine(230)
       ui.textColored(money(r.baseReward) .. ' +bonus', GOLD); ui.sameLine(345)
       if tintBtn('Start##r' .. i, BTN_GO) then startRoute(r); appOpen = false end
-      ui.sameLine(); if tintBtn('TP##tpr' .. i, BTN_INFO) then teleportTo(r.points) end
+      ui.sameLine(); if tintBtn('TP##tpr' .. i, BTN_INFO) then teleportTo(r.points, r.checkpointRadius or CONFIG.checkpointRadius) end
       if r._id then ui.sameLine(); if tintBtn('x##dr' .. r._id, BTN_DANGER) then economyDeleteMission(r._id) end end
     end
   end
