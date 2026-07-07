@@ -4,7 +4,7 @@
   "data": {
     "name": "H1 Hotlap",
     "hotlap": true,
-    "checkpointRadius": 12,
+    "checkpointRadius": 10,
     "target": 900,
     "baseReward": 2000,
     "bonusPerSecond": 8,

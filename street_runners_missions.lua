@@ -740,11 +740,7 @@ local M_CHECK    = { 0.30, 0.85, 1.00 }   -- cyan   = intermediate checkpoint
 local M_FINISH   = { 1.00, 0.30, 0.36 }   -- red    = finish line
 local M_ACTIVE   = { 1.00, 0.92, 0.25 }   -- yellow = your current target
 
--- How hard the laser core drives into HDR. >1 pushes the emissive color past
--- white so CSP's bloom post-process lights it up like the reference footage.
--- If a build ignores HDR this just clamps and the layered halo still reads well.
-local LASER_HDR    = 6.0
-local LASER_RADIUS = 0.09   -- core tube radius in metres; glow extends past it
+local LASER_RADIUS = 0.07   -- core tube radius in metres; glow extends past it
 local TUBE_SEGS    = 8      -- facets around the tube (higher = rounder, costlier)
 
 -- Road-edge probing: instead of a fixed radius (which either misses the edges of
@@ -780,20 +776,22 @@ local function groundY(x, z, guessY)
   return (guessY + 3.0) - d
 end
 
--- How far the road reaches from p along unit lateral (sx,sz). Stops at whichever
--- comes first: a wall/barrier (sideways ray), a sudden lip between adjacent steps
--- (asphalt->grass edge, even a small one), or a big height change / missing
--- surface. The per-step lip check catches flush shoulders that a center-relative
--- check misses, while ignoring gradual road camber.
-local function probeReach(p, sx, sz, baseY, fallback)
-  local reach, ok = fallback, pcall(function()
+-- How far the road reaches from p along unit lateral (sx,sz), but never past
+-- `maxHalf` (the route's own width). The probe only PULLS IN from that width when
+-- it detects an earlier edge — a wall/barrier (sideways ray), a sudden lip
+-- between adjacent steps (asphalt->grass, even a small one), or a big drop /
+-- missing surface. Painted road edges have no geometry to detect, so on those it
+-- just uses the route width. Tune width per route via its checkpointRadius.
+local function probeReach(p, sx, sz, baseY, maxHalf)
+  local cap = math.min(maxHalf, EDGE_MAX)
+  local reach, ok = cap, pcall(function()
     -- 1) wall/barrier: a single sideways ray, fired above car height
-    local wall = castTrack(p.x, baseY + EDGE_WALLH, p.z, sx, 0, sz, EDGE_MAX + 2)
-    local wallEdge = wall and (wall - EDGE_MARGIN) or EDGE_MAX
+    local wall = castTrack(p.x, baseY + EDGE_WALLH, p.z, sx, 0, sz, cap + 2)
+    local wallEdge = wall and (wall - EDGE_MARGIN) or cap
 
     -- 2) surface walk: stop on a sudden lip, a large drop, or no surface
     local last, prevY, d = EDGE_MIN, baseY, EDGE_STEP
-    while d <= EDGE_MAX and d < wallEdge do
+    while d <= cap and d < wallEdge do
       local hy = groundY(p.x + sx * d, p.z + sz * d, baseY)
       if not hy then break end                          -- nothing below → past the edge
       if math.abs(hy - prevY) > EDGE_LIP then break end  -- sharp lip between steps → edge
@@ -802,9 +800,9 @@ local function probeReach(p, sx, sz, baseY, fallback)
     end
     reach = math.min(last, wallEdge)
   end)
-  if not ok then reach = fallback end
+  if not ok then reach = cap end
   if reach < EDGE_MIN then reach = EDGE_MIN end
-  if reach > EDGE_MAX then reach = EDGE_MAX end
+  if reach > cap then reach = cap end
   return reach
 end
 
@@ -830,8 +828,9 @@ local function groundLaser(p, dx, dz, ax, az, halfL, halfR, r, g, b)
   local R    = LASER_RADIUS
   local cy   = p.y + R + 0.06                       -- float just above the tarmac
   local wx, wz = dx, dz                             -- travel dir = cross-section horizontal
-  local pulse = 0.88 + 0.12 * math.sin(sessionTime * 3)
-  local hr, hg, hb = math.min(1, r + 0.55), math.min(1, g + 0.45), math.min(1, b + 0.55)
+  local pulse = 0.9 + 0.1 * math.sin(sessionTime * 3)
+  -- brighter core in the SAME hue (scaled, not whitened) — reads as saturated neon
+  local br, bg, bb = math.min(1, r * 1.3), math.min(1, g * 1.3), math.min(1, b * 1.3)
   local A = vec3(p.x + ax * halfL, cy, p.z + az * halfL)
   local B = vec3(p.x - ax * halfR, cy, p.z - az * halfR)
 
@@ -868,20 +867,15 @@ local function groundLaser(p, dx, dz, ax, az, halfL, halfR, r, g, b)
         rgbm(r, g, b, a))
     end)
   end
-  bleed(1.3, 0.05)
-  bleed(0.6, 0.09)
+  bleed(0.7, 0.04)
 
-  -- wide faint glow → tighter → coloured core; additive sums them into a beam
-  shell(R * 3.0 * pulse, r,  g,  b,  0.04)          -- soft outer halo
-  shell(R * 1.9,         r,  g,  b,  0.09)
-  shell(R * 1.15,        r,  g,  b,  0.22)          -- saturated colour body
-  shell(R,               hr, hg, hb, 0.40)          -- hot near-white core skin
+  -- tight neon tube: soft halo → saturated body → bright in-hue core (no white)
+  shell(R * 2.4 * pulse, r,  g,  b,  0.05)          -- soft outer halo
+  shell(R * 1.5,         r,  g,  b,  0.14)          -- saturated colour body
+  shell(R,               br, bg, bb, 0.45)          -- bright core skin, same hue
 
-  -- bright thin centre line down the axis; HDR overdraw blooms if supported
-  render.debugLine(A, B, rgbm(hr, hg, hb, 1.0))
-  pcall(function()
-    render.debugLine(A, B, rgbm(hr * LASER_HDR, hg * LASER_HDR, hb * LASER_HDR, 1.0))
-  end)
+  -- crisp bright centre line running the length, in the same hue (stays neon)
+  render.debugLine(A, B, rgbm(br, bg, bb, 1.0))
 
   if blended then pcall(function() render.setBlendMode(render.BlendMode.AlphaBlend) end) end
 end
