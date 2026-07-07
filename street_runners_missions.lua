@@ -728,32 +728,111 @@ local function dirXZ(a, b)
 end
 
 local GREEN3     = rgbm(0.4, 1.0, 0.55, 1.0)
-local GREEN_GLOW = rgbm(0.4, 1.0, 0.55, 0.22)
 local RED3       = rgbm(1.0, 0.3, 0.38, 1.0)
-local RED_GLOW   = rgbm(1.0, 0.3, 0.38, 0.22)
 local CYAN3      = rgbm(0.3, 0.85, 1.0, 1.0)
-local CYAN_GLOW  = rgbm(0.3, 0.85, 1.0, 0.20)
 local YEL3       = rgbm(1.0, 0.95, 0.25, 1.0)
-local YEL_GLOW   = rgbm(1.0, 0.95, 0.25, 0.28)
 
--- A crisp glowing laser bar on the ground across the direction of travel — a
--- solid bright core over a soft glow halo that breathes. Used for route
--- checkpoints. Bright core line is guaranteed; the quad strips need render.quad.
-local function groundLaser(p, dx, dz, ax, az, halfW, col, glow)
-  local y = p.y + 0.05
-  local L = vec3(p.x + ax * halfW, y, p.z + az * halfW)
-  local R = vec3(p.x - ax * halfW, y, p.z - az * halfW)
-  local pulse = 0.7 + 0.3 * math.sin(sessionTime * 3)
-  local function strip(depth, yoff, c)
+-- ONE consistent marker color code, used for every route AND drift zone so a
+-- start looks like a start on every road, a finish like a finish, etc. Raw
+-- r,g,b triples (groundLaser builds the rgbm layers itself).
+local M_START    = { 0.35, 1.00, 0.45 }   -- green  = start line
+local M_CHECK    = { 0.30, 0.85, 1.00 }   -- cyan   = intermediate checkpoint
+local M_FINISH   = { 1.00, 0.30, 0.36 }   -- red    = finish line
+local M_ACTIVE   = { 1.00, 0.92, 0.25 }   -- yellow = your current target
+
+-- How hard the laser core drives into HDR. >1 pushes the emissive color past
+-- white so CSP's bloom post-process lights it up like the reference footage.
+-- If a build ignores HDR this just clamps and the layered halo still reads well.
+local LASER_HDR = 6.0
+
+-- Road-edge probing: instead of a fixed radius (which only covers the middle of
+-- wide roads), walk sideways from a checkpoint casting downward rays and find
+-- where the drivable surface ends, so the line spans edge to edge. Left and
+-- right are measured independently. Best-effort: if physics.raycastTrack is
+-- missing or finds nothing it degrades to the fixed fallback width.
+local EDGE_STEP = 0.5    -- probe resolution (m)
+local EDGE_MAX  = 18     -- never extend past this half-width (m)
+local EDGE_MIN  = 2.0    -- never shorter than this half-width (m)
+local EDGE_DROP = 0.5    -- vertical change (m) that counts as leaving the road (curb/wall/hole)
+local edgeCache = {}     -- keyed by rounded x_z so each spot is probed only once
+
+-- Ground height directly below (x,z), or nil if nothing is there. Casting from
+-- well above the point makes this independent of how accurate p.y is.
+local function groundY(x, z, guessY)
+  local fromY = guessY + 3.0
+  local dist = physics.raycastTrack(vec3(x, fromY, z), vec3(0, -1, 0), 10.0)
+  if not dist or dist < 0 then return nil end
+  return fromY - dist
+end
+
+-- distance the road reaches from p along unit lateral (sx,sz), measured relative
+-- to the road height at the center (baseY) so curbs/walls/drops read as edges.
+local function probeReach(p, sx, sz, baseY, fallback)
+  local reach, ok = fallback, pcall(function()
+    local last, d = EDGE_MIN, EDGE_STEP
+    while d <= EDGE_MAX do
+      local hy = groundY(p.x + sx * d, p.z + sz * d, baseY)
+      if not hy then break end                          -- nothing below → past the edge
+      if math.abs(hy - baseY) > EDGE_DROP then break end -- curb/wall/drop → edge
+      last, d = d, d + EDGE_STEP
+    end
+    reach = last
+  end)
+  if not ok then reach = fallback end
+  if reach < EDGE_MIN then reach = EDGE_MIN end
+  if reach > EDGE_MAX then reach = EDGE_MAX end
+  return reach
+end
+
+-- {l, r} half-widths to each road edge at p, cached per location.
+local function roadEdges(p, ax, az, fallback)
+  local k = string.format('%.1f_%.1f', p.x, p.z)
+  local e = edgeCache[k]
+  if not e then
+    local base = groundY(p.x, p.z, p.y) or p.y          -- true road height at the center
+    e = { l = probeReach(p, ax, az, base, fallback), r = probeReach(p, -ax, -az, base, fallback) }
+    edgeCache[k] = e
+  end
+  return e
+end
+
+-- A hot glowing laser bar on the ground across the direction of travel. Built
+-- from raw r,g,b (reading rgbm fields is unreliable in CSP) so we can synthesize
+-- a bloom falloff: several progressively narrower, brighter strips stacked into
+-- a gaussian-ish glow, a near-white hot core, and an HDR emissive center line
+-- that triggers the game's bloom. Used for route checkpoints.
+local function groundLaser(p, dx, dz, ax, az, halfL, halfR, r, g, b)
+  local y = p.y + 0.04
+  local Lx, Lz = p.x + ax * halfL, p.z + az * halfL
+  local Rx, Rz = p.x - ax * halfR, p.z - az * halfR
+  local pulse = 0.86 + 0.14 * math.sin(sessionTime * 3)
+  -- hot, near-white version of the tint for the burning core
+  local hr, hg, hb = math.min(1, r + 0.5), math.min(1, g + 0.35), math.min(1, b + 0.5)
+
+  local function strip(depth, yoff, cr, cg, cb, a)
     pcall(function()
       local yy = y + yoff
-      render.quad(vec3(L.x - dx * depth, yy, L.z - dz * depth), vec3(L.x + dx * depth, yy, L.z + dz * depth),
-        vec3(R.x + dx * depth, yy, R.z + dz * depth), vec3(R.x - dx * depth, yy, R.z - dz * depth), c)
+      render.quad(
+        vec3(Lx - dx * depth, yy, Lz - dz * depth), vec3(Lx + dx * depth, yy, Lz + dz * depth),
+        vec3(Rx + dx * depth, yy, Rz + dz * depth), vec3(Rx - dx * depth, yy, Rz - dz * depth),
+        rgbm(cr, cg, cb, a))
     end)
   end
-  strip((1.1 + 0.3 * pulse), 0.0, glow) -- breathing soft halo
-  strip(0.16, 0.02, col)                -- crisp solid bright core
-  render.debugLine(L, R, col)           -- guaranteed core line
+
+  -- bloom falloff: wide + faint outer glow → tight + bright inner core
+  strip(1.70 * pulse, 0.000, r, g, b, 0.05)
+  strip(1.00 * pulse, 0.008, r, g, b, 0.11)
+  strip(0.48,         0.016, r, g, b, 0.24)
+  strip(0.24,         0.026, hr, hg, hb, 0.55)
+  strip(0.11,         0.040, hr, hg, hb, 1.00)   -- hot solid core band
+
+  -- crisp guaranteed center line, plus an HDR-bright overdraw that blooms
+  local cy = y + 0.06
+  render.debugLine(vec3(Lx, cy, Lz), vec3(Rx, cy, Rz), rgbm(hr, hg, hb, 1.0))
+  pcall(function()
+    render.debugLine(vec3(Lx, cy, Lz), vec3(Rx, cy, Rz),
+      rgbm(hr * LASER_HDR, hg * LASER_HDR, hb * LASER_HDR, 1.0))
+  end)
 end
 
 -- Zone gate: a laser light-curtain across the road. Built from raw r,g,b so we
@@ -832,6 +911,8 @@ function script.draw3D()
   pcall(function()
     render.setDepthMode(render.DepthMode.ReadOnlyLessEqual)
 
+    -- Checkpoint routes: green start → cyan checkpoints → red finish, with the
+    -- current target in yellow. Every road uses this exact code + the flat laser.
     for _, route in ipairs(ROUTES) do
       local pts = route.points
       if #pts >= 2 then
@@ -839,25 +920,36 @@ function script.draw3D()
           local a, b = (i < #pts) and p or pts[i - 1], (i < #pts) and pts[i + 1] or p
           local dx, dz = dirXZ(a, b)
           local ax, az = perpXZ(a, b)
-          local col, glow = CYAN3, CYAN_GLOW
-          if i == 1 then col, glow = GREEN3, GREEN_GLOW end
-          if run.active and run.route == route and run.index == i then col, glow = YEL3, YEL_GLOW end
-          groundLaser(p, dx, dz, ax, az, route.checkpointRadius or CONFIG.checkpointRadius, col, glow)
+          local m = M_CHECK
+          if i == 1 then m = M_START end
+          -- last point is the finish (a hotlap loops, so its start doubles as finish)
+          if i == #pts and not route.hotlap then m = M_FINISH end
+          if run.active and run.route == route and run.index == i then m = M_ACTIVE end
+          local fb = route.checkpointRadius or CONFIG.checkpointRadius
+          local e = roadEdges(p, ax, az, fb)                       -- span the actual road
+          groundLaser(p, dx, dz, ax, az, e.l, e.r, m[1], m[2], m[3])
+        end
+        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 1.9, pts[1].z), 'START', GREEN3) end)
+        if not route.hotlap then
+          pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 1.9, pts[#pts].z), 'FINISH', RED3) end)
         end
       end
     end
 
-    -- Drift zones: just a clean green START gate and red FINISH gate.
+    -- Drift zones: same flat laser + color code — green START line, red FINISH
+    -- line — so they read consistently with route checkpoints.
     for _, zone in ipairs(DRIFT_ZONES) do
       local pts = zone.points
       if #pts >= 2 then
         local halfW = (zone.width or 8) / 2
         local sdx, sdz = dirXZ(pts[1], pts[2])
         local sax, saz = perpXZ(pts[1], pts[2])
-        drawGate(pts[1], sdx, sdz, sax, saz, halfW, 0.45, 1.0, 0.55)   -- green START
+        local se = roadEdges(pts[1], sax, saz, halfW)
+        groundLaser(pts[1], sdx, sdz, sax, saz, se.l, se.r, M_START[1], M_START[2], M_START[3])
         local fdx, fdz = dirXZ(pts[#pts - 1], pts[#pts])
         local fax, faz = perpXZ(pts[#pts - 1], pts[#pts])
-        drawGate(pts[#pts], fdx, fdz, fax, faz, halfW, 1.0, 0.32, 0.40) -- red FINISH
+        local fe = roadEdges(pts[#pts], fax, faz, halfW)
+        groundLaser(pts[#pts], fdx, fdz, fax, faz, fe.l, fe.r, M_FINISH[1], M_FINISH[2], M_FINISH[3])
         pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 1.9, pts[1].z), 'START', GREEN3) end)
         pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 1.9, pts[#pts].z), 'FINISH', RED3) end)
       end
