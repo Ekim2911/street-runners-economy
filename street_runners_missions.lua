@@ -1228,7 +1228,8 @@ end
 -- Best-effort teleport to a mission's first point, facing the second. Online
 -- scripts can't always move the car (server anti-cheat), so this is wrapped
 -- and reports whether the call was even accepted.
-local TP_BACK = 0.6        -- metres to sit behind the start line (~2 ft) so you cross it on launch
+local TP_BACK = 3.0        -- metres to sit behind the start line: setCarPosition places the car
+                          -- ORIGIN, so ~half a car length + a couple feet puts the NOSE behind the line
 local TP_LANE_SIGN = 1     -- which side is the "far right" lane; flip to -1 if it lands on the left
 local teleportMsg, teleportMsgUntil = '', -1
 local function teleportTo(pts, radius)
