@@ -744,7 +744,7 @@ local M_ACTIVE   = { 1.00, 0.92, 0.25 }   -- yellow = your current target
 -- white so CSP's bloom post-process lights it up like the reference footage.
 -- If a build ignores HDR this just clamps and the layered halo still reads well.
 local LASER_HDR    = 6.0
-local LASER_RADIUS = 0.12   -- core tube radius in metres; glow extends past it
+local LASER_RADIUS = 0.09   -- core tube radius in metres; glow extends past it
 local TUBE_SEGS    = 8      -- facets around the tube (higher = rounder, costlier)
 
 -- Road-edge probing: instead of a fixed radius (which either misses the edges of
@@ -752,10 +752,11 @@ local TUBE_SEGS    = 8      -- facets around the tube (higher = rounder, costlie
 -- track raycasts — a sideways ray for walls/barriers and a downward step-walk for
 -- curbs/drops. Left and right are measured independently. Best-effort: if the ray
 -- API is unavailable or finds nothing it degrades to the fixed fallback width.
-local EDGE_STEP = 0.5    -- probe resolution (m)
+local EDGE_STEP = 0.35   -- probe resolution (m)
 local EDGE_MAX  = 16     -- never extend past this half-width (m)
 local EDGE_MIN  = 2.0    -- never shorter than this half-width (m)
-local EDGE_DROP = 0.5    -- vertical change (m) that counts as leaving the road (curb/hole)
+local EDGE_LIP  = 0.12   -- sudden ground jump BETWEEN adjacent steps that means an edge (m)
+local EDGE_DROP = 0.6    -- absolute height change from road center that always counts as edge (m)
 local EDGE_WALLH = 1.5   -- height (m) to fire the sideways wall probe from (above cars)
 local EDGE_MARGIN = 0.3  -- pull the line back this far from a detected wall
 local edgeCache = {}     -- keyed by rounded x_z so each spot is probed only once
@@ -780,21 +781,24 @@ local function groundY(x, z, guessY)
 end
 
 -- How far the road reaches from p along unit lateral (sx,sz). Stops at whichever
--- comes first: a wall/barrier (sideways ray) or a curb/drop (ground height jump),
--- both measured relative to the center road height (baseY).
+-- comes first: a wall/barrier (sideways ray), a sudden lip between adjacent steps
+-- (asphalt->grass edge, even a small one), or a big height change / missing
+-- surface. The per-step lip check catches flush shoulders that a center-relative
+-- check misses, while ignoring gradual road camber.
 local function probeReach(p, sx, sz, baseY, fallback)
   local reach, ok = fallback, pcall(function()
     -- 1) wall/barrier: a single sideways ray, fired above car height
     local wall = castTrack(p.x, baseY + EDGE_WALLH, p.z, sx, 0, sz, EDGE_MAX + 2)
     local wallEdge = wall and (wall - EDGE_MARGIN) or EDGE_MAX
 
-    -- 2) curb/drop: step outward until the ground height jumps or the surface ends
-    local last, d = EDGE_MIN, EDGE_STEP
+    -- 2) surface walk: stop on a sudden lip, a large drop, or no surface
+    local last, prevY, d = EDGE_MIN, baseY, EDGE_STEP
     while d <= EDGE_MAX and d < wallEdge do
       local hy = groundY(p.x + sx * d, p.z + sz * d, baseY)
       if not hy then break end                          -- nothing below → past the edge
-      if math.abs(hy - baseY) > EDGE_DROP then break end -- curb/drop → edge
-      last, d = d, d + EDGE_STEP
+      if math.abs(hy - prevY) > EDGE_LIP then break end  -- sharp lip between steps → edge
+      if math.abs(hy - baseY) > EDGE_DROP then break end -- far above/below the road → edge
+      last, prevY, d = d, hy, d + EDGE_STEP
     end
     reach = math.min(last, wallEdge)
   end)
@@ -868,10 +872,10 @@ local function groundLaser(p, dx, dz, ax, az, halfL, halfR, r, g, b)
   bleed(0.6, 0.09)
 
   -- wide faint glow → tighter → coloured core; additive sums them into a beam
-  shell(R * 3.4 * pulse, r,  g,  b,  0.05)
-  shell(R * 2.1,         r,  g,  b,  0.10)
-  shell(R * 1.2,         r,  g,  b,  0.20)
-  shell(R,               hr, hg, hb, 0.35)          -- hot near-white core skin
+  shell(R * 3.0 * pulse, r,  g,  b,  0.04)          -- soft outer halo
+  shell(R * 1.9,         r,  g,  b,  0.09)
+  shell(R * 1.15,        r,  g,  b,  0.22)          -- saturated colour body
+  shell(R,               hr, hg, hb, 0.40)          -- hot near-white core skin
 
   -- bright thin centre line down the axis; HDR overdraw blooms if supported
   render.debugLine(A, B, rgbm(hr, hg, hb, 1.0))
