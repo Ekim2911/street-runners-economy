@@ -991,20 +991,30 @@ function script.draw3D()
     for _, route in ipairs(ROUTES) do
       local pts = route.points
       if #pts >= 2 then
+        -- On a hotlap the start line IS the finish line, so it stays green START
+        -- until you've cleared the last checkpoint (index == #pts), then it turns
+        -- into the FINISH line for the closing crossing.
+        local finishing = route.hotlap and run.active and run.route == route and run.index == #pts
         for i, p in ipairs(pts) do
-          local a, b = (i < #pts) and p or pts[i - 1], (i < #pts) and pts[i + 1] or p
-          local dx, dz = dirXZ(a, b)
-          local ax, az = perpXZ(a, b)
-          local m = M_CHECK
-          if i == 1 then m = M_START end
-          -- last point is the finish (a hotlap loops, so its start doubles as finish)
-          if i == #pts and not route.hotlap then m = M_FINISH end
-          if run.active and run.route == route and run.index == i then m = M_ACTIVE end
-          local fb = route.checkpointRadius or CONFIG.checkpointRadius
-          local e = roadEdges(p, ax, az, fb)                       -- span the actual road
-          groundLaser(p, dx, dz, ax, az, e.l, e.r, m[1], m[2], m[3])
+          -- a hotlap's closing point sits on top of the start line — skip drawing
+          -- it so there's just ONE line there (the start line shows the finish).
+          if not (route.hotlap and i == #pts) then
+            local a, b = (i < #pts) and p or pts[i - 1], (i < #pts) and pts[i + 1] or p
+            local dx, dz = dirXZ(a, b)
+            local ax, az = perpXZ(a, b)
+            local m = M_CHECK
+            if i == 1 then m = finishing and M_FINISH or M_START end
+            if i == #pts and not route.hotlap then m = M_FINISH end
+            if run.active and run.route == route and run.index == i then m = M_ACTIVE end
+            local fb = route.checkpointRadius or CONFIG.checkpointRadius
+            local e = roadEdges(p, ax, az, fb)                     -- span the actual road
+            groundLaser(p, dx, dz, ax, az, e.l, e.r, m[1], m[2], m[3])
+          end
         end
-        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 1.9, pts[1].z), 'START', GREEN3) end)
+        -- label: START normally; on a hotlap it becomes FINISH once you're on the
+        -- closing segment, which is the "finish pops up after the last checkpoint".
+        local lbl = finishing and 'FINISH' or 'START'
+        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 1.9, pts[1].z), lbl, finishing and RED3 or GREEN3) end)
         if not route.hotlap then
           pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 1.9, pts[#pts].z), 'FINISH', RED3) end)
         end
