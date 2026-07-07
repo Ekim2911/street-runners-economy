@@ -747,38 +747,56 @@ local LASER_HDR    = 6.0
 local LASER_RADIUS = 0.12   -- core tube radius in metres; glow extends past it
 local TUBE_SEGS    = 8      -- facets around the tube (higher = rounder, costlier)
 
--- Road-edge probing: instead of a fixed radius (which only covers the middle of
--- wide roads), walk sideways from a checkpoint casting downward rays and find
--- where the drivable surface ends, so the line spans edge to edge. Left and
--- right are measured independently. Best-effort: if physics.raycastTrack is
--- missing or finds nothing it degrades to the fixed fallback width.
+-- Road-edge probing: instead of a fixed radius (which either misses the edges of
+-- wide roads or overshoots past them), find the actual road edge each side via
+-- track raycasts — a sideways ray for walls/barriers and a downward step-walk for
+-- curbs/drops. Left and right are measured independently. Best-effort: if the ray
+-- API is unavailable or finds nothing it degrades to the fixed fallback width.
 local EDGE_STEP = 0.5    -- probe resolution (m)
-local EDGE_MAX  = 18     -- never extend past this half-width (m)
+local EDGE_MAX  = 16     -- never extend past this half-width (m)
 local EDGE_MIN  = 2.0    -- never shorter than this half-width (m)
-local EDGE_DROP = 0.5    -- vertical change (m) that counts as leaving the road (curb/wall/hole)
+local EDGE_DROP = 0.5    -- vertical change (m) that counts as leaving the road (curb/hole)
+local EDGE_WALLH = 1.5   -- height (m) to fire the sideways wall probe from (above cars)
+local EDGE_MARGIN = 0.3  -- pull the line back this far from a detected wall
 local edgeCache = {}     -- keyed by rounded x_z so each spot is probed only once
+
+-- Cast a ray against the track; return hit distance or nil (miss/unavailable).
+-- render.createRay(...):track() is the confirmed CSP API (only valid in draw3D).
+local function castTrack(ox, oy, oz, dirx, diry, dirz, len)
+  local d
+  local ok = pcall(function()
+    d = render.createRay(vec3(ox, oy, oz), vec3(dirx, diry, dirz), len):track()
+  end)
+  if not ok or type(d) ~= 'number' or d < 0 then return nil end
+  return d
+end
 
 -- Ground height directly below (x,z), or nil if nothing is there. Casting from
 -- well above the point makes this independent of how accurate p.y is.
 local function groundY(x, z, guessY)
-  local fromY = guessY + 3.0
-  local dist = physics.raycastTrack(vec3(x, fromY, z), vec3(0, -1, 0), 10.0)
-  if not dist or dist < 0 then return nil end
-  return fromY - dist
+  local d = castTrack(x, guessY + 3.0, z, 0, -1, 0, 12.0)
+  if not d then return nil end
+  return (guessY + 3.0) - d
 end
 
--- distance the road reaches from p along unit lateral (sx,sz), measured relative
--- to the road height at the center (baseY) so curbs/walls/drops read as edges.
+-- How far the road reaches from p along unit lateral (sx,sz). Stops at whichever
+-- comes first: a wall/barrier (sideways ray) or a curb/drop (ground height jump),
+-- both measured relative to the center road height (baseY).
 local function probeReach(p, sx, sz, baseY, fallback)
   local reach, ok = fallback, pcall(function()
+    -- 1) wall/barrier: a single sideways ray, fired above car height
+    local wall = castTrack(p.x, baseY + EDGE_WALLH, p.z, sx, 0, sz, EDGE_MAX + 2)
+    local wallEdge = wall and (wall - EDGE_MARGIN) or EDGE_MAX
+
+    -- 2) curb/drop: step outward until the ground height jumps or the surface ends
     local last, d = EDGE_MIN, EDGE_STEP
-    while d <= EDGE_MAX do
+    while d <= EDGE_MAX and d < wallEdge do
       local hy = groundY(p.x + sx * d, p.z + sz * d, baseY)
       if not hy then break end                          -- nothing below → past the edge
-      if math.abs(hy - baseY) > EDGE_DROP then break end -- curb/wall/drop → edge
+      if math.abs(hy - baseY) > EDGE_DROP then break end -- curb/drop → edge
       last, d = d, d + EDGE_STEP
     end
-    reach = last
+    reach = math.min(last, wallEdge)
   end)
   if not ok then reach = fallback end
   if reach < EDGE_MIN then reach = EDGE_MIN end
