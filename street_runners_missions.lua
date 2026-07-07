@@ -1011,13 +1011,9 @@ function script.draw3D()
             groundLaser(p, dx, dz, ax, az, e.l, e.r, m[1], m[2], m[3])
           end
         end
-        -- label: START normally; on a hotlap it becomes FINISH once you're on the
-        -- closing segment, which is the "finish pops up after the last checkpoint".
-        local lbl = finishing and 'FINISH' or 'START'
-        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 1.9, pts[1].z), lbl, finishing and RED3 or GREEN3) end)
-        if not route.hotlap then
-          pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 1.9, pts[#pts].z), 'FINISH', RED3) end)
-        end
+        -- (no floating START/FINISH text — render.debugText draws through walls at
+        -- any distance, so it was visible across the whole map. The colored line
+        -- carries the meaning: green=start, red=finish once past the last checkpoint.)
       end
     end
 
@@ -1035,8 +1031,6 @@ function script.draw3D()
         local fax, faz = perpXZ(pts[#pts - 1], pts[#pts])
         local fe = roadEdges(pts[#pts], fax, faz, halfW)
         groundLaser(pts[#pts], fdx, fdz, fax, faz, fe.l, fe.r, M_FINISH[1], M_FINISH[2], M_FINISH[3])
-        pcall(function() render.debugText(vec3(pts[1].x, pts[1].y + 1.9, pts[1].z), 'START', GREEN3) end)
-        pcall(function() render.debugText(vec3(pts[#pts].x, pts[#pts].y + 1.9, pts[#pts].z), 'FINISH', RED3) end)
       end
     end
 
