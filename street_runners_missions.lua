@@ -758,7 +758,7 @@ local function dirXZ(a, b)
 end
 
 local GREEN3     = rgbm(0.4, 1.0, 0.55, 1.0)
-local RED3       = rgbm(1.0, 0.3, 0.38, 1.0)
+local RED3       = rgbm(1.0, 0.16, 0.16, 1.0)
 local CYAN3      = rgbm(0.3, 0.85, 1.0, 1.0)
 local YEL3       = rgbm(1.0, 0.95, 0.25, 1.0)
 
@@ -767,7 +767,7 @@ local YEL3       = rgbm(1.0, 0.95, 0.25, 1.0)
 -- r,g,b triples (groundLaser builds the rgbm layers itself).
 local M_START    = { 0.35, 1.00, 0.45 }   -- green  = start line
 local M_CHECK    = { 0.30, 0.85, 1.00 }   -- cyan   = intermediate checkpoint
-local M_FINISH   = { 1.00, 0.30, 0.36 }   -- red    = finish line
+local M_FINISH   = { 1.00, 0.10, 0.08 }   -- red    = finish line (saturated so additive glow stays red, not pink)
 local M_ACTIVE   = { 1.00, 0.92, 0.25 }   -- yellow = your current target
 
 local LASER_RADIUS = 0.07   -- core tube radius in metres; glow extends past it
