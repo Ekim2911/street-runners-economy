@@ -744,7 +744,7 @@ local M_ACTIVE   = { 1.00, 0.92, 0.25 }   -- yellow = your current target
 -- white so CSP's bloom post-process lights it up like the reference footage.
 -- If a build ignores HDR this just clamps and the layered halo still reads well.
 local LASER_HDR    = 6.0
-local LASER_RADIUS = 0.22   -- tube radius in metres (~0.44m thick beam)
+local LASER_RADIUS = 0.12   -- core tube radius in metres; glow extends past it
 local TUBE_SEGS    = 8      -- facets around the tube (higher = rounder, costlier)
 
 -- Road-edge probing: instead of a fixed radius (which only covers the middle of
@@ -798,46 +798,45 @@ local function roadEdges(p, ax, az, fallback)
   return e
 end
 
--- A glowing tubular laser beam laid across the road, edge to edge. Real
--- cylinder geometry (a ring cross-section extruded along the beam axis) so it
--- reads as a round tube from any angle: concentric soft glow shells around a
--- bright solid skin, a hot HDR core line down the axis, and a faint light
--- bleed on the tarmac beneath. Built from raw r,g,b (reading rgbm fields is
+-- A glowing laser beam laid across the road, edge to edge. Drawn with ADDITIVE
+-- blending so overlapping translucent shells sum into a hot bright core with a
+-- coloured glow falloff — the way real light behaves — instead of a solid,
+-- shaded, opaque tube. Thin cylinder shells give it round volume; a bright
+-- near-white centre line runs down the axis. Raw r,g,b (reading rgbm fields is
 -- unreliable in CSP). Used for every checkpoint / start / finish marker.
 local function groundLaser(p, dx, dz, ax, az, halfL, halfR, r, g, b)
   local R    = LASER_RADIUS
-  local cy   = p.y + R + 0.04                      -- lift so the tube rests on the road
-  local wx, wz = dx, dz                            -- travel dir = cross-section horizontal
-  local pulse = 0.9 + 0.1 * math.sin(sessionTime * 3)
-  local hr, hg, hb = math.min(1, r + 0.5), math.min(1, g + 0.4), math.min(1, b + 0.5)
-  -- beam axis endpoints (the two road edges)
+  local cy   = p.y + R + 0.06                       -- float just above the tarmac
+  local wx, wz = dx, dz                             -- travel dir = cross-section horizontal
+  local pulse = 0.88 + 0.12 * math.sin(sessionTime * 3)
+  local hr, hg, hb = math.min(1, r + 0.55), math.min(1, g + 0.45), math.min(1, b + 0.55)
   local A = vec3(p.x + ax * halfL, cy, p.z + az * halfL)
   local B = vec3(p.x - ax * halfR, cy, p.z - az * halfR)
 
-  -- one cylindrical shell at radius `rad`; `hot` uses the near-white core tint,
-  -- and facets facing up are shaded brighter to give the tube roundness.
-  local function shell(rad, a, hot)
-    local br, bg, bb = r, g, b
-    if hot then br, bg, bb = hr, hg, hb end
+  -- switch to additive light accumulation; restore afterwards
+  local blended = false
+  pcall(function() render.setBlendMode(render.BlendMode.BlendAdd); blended = true end)
+
+  -- a thin cylindrical shell of uniform emissive colour at radius `rad`
+  local function shell(rad, cr, cg, cb, a)
+    local col = rgbm(cr, cg, cb, a)
     for k = 0, TUBE_SEGS - 1 do
       local t0 = (k / TUBE_SEGS) * math.pi * 2
       local t1 = ((k + 1) / TUBE_SEGS) * math.pi * 2
       local c0, s0 = math.cos(t0), math.sin(t0)
       local c1, s1 = math.cos(t1), math.sin(t1)
-      local shade = 0.55 + 0.45 * math.sin((t0 + t1) * 0.5)   -- top facets brightest
-      local col = rgbm(br * shade, bg * shade, bb * shade, a)
       pcall(function()
         local p1 = vec3(A.x + wx * rad * c0, A.y + rad * s0, A.z + wz * rad * c0)
         local p2 = vec3(A.x + wx * rad * c1, A.y + rad * s1, A.z + wz * rad * c1)
         local p3 = vec3(B.x + wx * rad * c1, B.y + rad * s1, B.z + wz * rad * c1)
         local p4 = vec3(B.x + wx * rad * c0, B.y + rad * s0, B.z + wz * rad * c0)
         render.quad(p1, p2, p3, p4, col)
-        render.quad(p4, p3, p2, p1, col)             -- double-sided
+        render.quad(p4, p3, p2, p1, col)              -- double-sided (adds → brighter core)
       end)
     end
   end
 
-  -- soft light bleed on the tarmac under the beam
+  -- soft coloured light spilling onto the tarmac under the beam
   local function bleed(depth, a)
     pcall(function()
       local yy = p.y + 0.03
@@ -847,19 +846,22 @@ local function groundLaser(p, dx, dz, ax, az, halfL, halfR, r, g, b)
         rgbm(r, g, b, a))
     end)
   end
-  bleed(1.6, 0.06)
-  bleed(0.8, 0.11)
+  bleed(1.3, 0.05)
+  bleed(0.6, 0.09)
 
-  -- glow halo → solid tube skin
-  shell(R * 2.7 * pulse, 0.07, false)
-  shell(R * 1.6,         0.20, false)
-  shell(R,               0.95, true)
+  -- wide faint glow → tighter → coloured core; additive sums them into a beam
+  shell(R * 3.4 * pulse, r,  g,  b,  0.05)
+  shell(R * 2.1,         r,  g,  b,  0.10)
+  shell(R * 1.2,         r,  g,  b,  0.20)
+  shell(R,               hr, hg, hb, 0.35)          -- hot near-white core skin
 
-  -- hot HDR core running down the tube's axis (blooms if the build supports it)
+  -- bright thin centre line down the axis; HDR overdraw blooms if supported
   render.debugLine(A, B, rgbm(hr, hg, hb, 1.0))
   pcall(function()
     render.debugLine(A, B, rgbm(hr * LASER_HDR, hg * LASER_HDR, hb * LASER_HDR, 1.0))
   end)
+
+  if blended then pcall(function() render.setBlendMode(render.BlendMode.AlphaBlend) end) end
 end
 
 -- Zone gate: a laser light-curtain across the road. Built from raw r,g,b so we
