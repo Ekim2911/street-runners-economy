@@ -194,6 +194,11 @@ app.use(cors());
 app.use(express.json({ type: ['application/json', 'text/*'] }));
 app.use(express.urlencoded({ extended: true }));
 
+// Static audio for mission storyline clips: drop mp3/ogg files in ./audio and
+// they're served at /audio/<name>. The Lua streams them via ui.MediaPlayer, so
+// there's nothing for players to install. Cached a day.
+app.use('/audio', express.static(path.join(__dirname, 'audio'), { maxAge: '1d' }));
+
 if (API_KEY) {
   app.use((req, res, next) => {
     // /script.lua is fetched directly by the game client (via AssettoServer's

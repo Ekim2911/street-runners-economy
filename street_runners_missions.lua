@@ -29,6 +29,16 @@ local CONFIG = {
               'acpursuit', 'undercover', 'sayrx_dodge_charger_undercover' },
   levelXpK = 250,             -- level = floor(1 + sqrt(lifetimeEarned / levelXpK))
   devSteamIds = { '76561199438773448' },   -- these players are always max level (dev/admin)
+  -- Storyline audio streamed from the server's /audio folder (no install). Any
+  -- file that isn't uploaded is simply skipped.
+  audioVolume = 1.0,
+  audio = {
+    deliveryStart  = 'delivery_start.mp3',
+    deliveryPickup = 'delivery_pickup.mp3',
+    deliveryWanted = 'delivery_wanted.mp3',
+    deliveryDone   = 'delivery_done.mp3',
+    deliveryBusted = 'delivery_busted.mp3',
+  },
   drift = {
     minAngle = 15,            -- degrees of slip before scoring starts
     spinAngle = 100,          -- degrees of slip that counts as a spin (wipes combo)
@@ -197,6 +207,21 @@ local economy = { leaderboardCash = {}, driftLeaderboards = {}, hotlapLeaderboar
 
 local function economyEnabled()
   return CONFIG.economyUrl ~= nil and CONFIG.economyUrl ~= ''
+end
+
+-- Storyline audio: stream a short clip from the server's /audio folder via
+-- ui.MediaPlayer (nothing for players to install). References are kept so
+-- playback isn't garbage-collected mid-clip. Entirely best-effort/pcall'd.
+local audioClips = {}
+local function playAudio(file)
+  if not file or file == '' or not economyEnabled() then return end
+  pcall(function()
+    local mp = ui.MediaPlayer(CONFIG.economyUrl .. '/audio/' .. file)
+    pcall(function() mp:setVolume(CONFIG.audioVolume or 1.0) end)
+    pcall(function() mp:play() end)
+    audioClips[#audioClips + 1] = mp
+    while #audioClips > 6 do table.remove(audioClips, 1) end
+  end)
 end
 
 -- Current car's model id (folder name), used to key per-car lap leaderboards.
@@ -703,6 +728,7 @@ local function startDelivery(m)
   delivery.wanted, delivery.bustTimer = false, 0
   delivery.startTime = sessionTime
   deliveryMsg('Go to the PICKUP')
+  playAudio(CONFIG.audio.deliveryStart)
 end
 
 local function deliveryComplete()
@@ -712,11 +738,13 @@ local function deliveryComplete()
   economyEarn(payout, 'delivery:' .. m.name)
   deliveryMsg(string.format('DELIVERED  +%s  (stealth +%s)', money(payout), money(bonus)))
   delivery.active, delivery.mission, delivery.wanted = false, nil, false
+  playAudio(CONFIG.audio.deliveryDone)
 end
 
 local function deliveryFail(reason)
   deliveryMsg(reason or 'BUSTED — cargo lost')
   delivery.active, delivery.mission, delivery.wanted = false, nil, false
+  playAudio(CONFIG.audio.deliveryBusted)
 end
 
 ---------------------------------------------------------------------------
@@ -854,6 +882,7 @@ local function updateDelivery(car, dt)
   if not delivery.wanted and delivery.heat >= 100 then
     delivery.wanted, delivery.bustTimer = true, 0
     deliveryMsg('COPS ON YOU — LOSE THEM!')
+    playAudio(CONFIG.audio.deliveryWanted)
   end
   if delivery.wanted then
     copBroadcastWanted()                                 -- put yourself on cops' radar
@@ -873,6 +902,7 @@ local function updateDelivery(car, dt)
     if dist2D(car.position, pickup) <= DLV.radius then
       delivery.stage = 'dropoff'
       deliveryMsg('Cargo loaded — DELIVER it, stay cool')
+      playAudio(CONFIG.audio.deliveryPickup)
     end
   else
     if not delivery.wanted and dist2D(car.position, drop) <= DLV.radius then
