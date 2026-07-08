@@ -24,7 +24,7 @@ local CONFIG = {
   -- Cops: to go on duty a player must be LEVEL >= copLevel AND driving a car
   -- whose id contains one of copCars (lower-case substring match). Add your
   -- server's cop car folder names here.
-  copLevel = 20,
+  copLevel = 1,               -- TEMP for testing (normally 20) — set back before going public
   copCars = { 'police', 'sheriff', 'patrol', 'crown_victoria', 'interceptor', 'charger_police',
               'acpursuit', 'undercover', 'sayrx_dodge_charger_undercover' },
   levelXpK = 250,             -- level = floor(1 + sqrt(lifetimeEarned / levelXpK))
