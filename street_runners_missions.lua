@@ -25,7 +25,8 @@ local CONFIG = {
   -- whose id contains one of copCars (lower-case substring match). Add your
   -- server's cop car folder names here.
   copLevel = 20,
-  copCars = { 'police', 'cop', 'sheriff', 'patrol', 'crown_victoria', 'interceptor', 'charger_police' },
+  copCars = { 'police', 'sheriff', 'patrol', 'crown_victoria', 'interceptor', 'charger_police',
+              'acpursuit', 'undercover', 'sayrx_dodge_charger_undercover' },
   levelXpK = 250,             -- level = floor(1 + sqrt(lifetimeEarned / levelXpK))
   drift = {
     minAngle = 15,            -- degrees of slip before scoring starts
