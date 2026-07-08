@@ -49,12 +49,13 @@ db.exec(`
     route_name TEXT NOT NULL,
     player_id TEXT NOT NULL,
     player_name TEXT NOT NULL,
+    car TEXT NOT NULL DEFAULT '',
     time_ms INTEGER NOT NULL,
     created_at INTEGER NOT NULL
   );
 
-  CREATE INDEX IF NOT EXISTS idx_hotlap_runs_route_player
-    ON hotlap_runs (route_id, player_id, time_ms ASC);
+  CREATE INDEX IF NOT EXISTS idx_hotlap_runs_route_car_player
+    ON hotlap_runs (route_id, car, player_id, time_ms ASC);
 
   CREATE TABLE IF NOT EXISTS missions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,6 +70,12 @@ db.exec(`
 // Upgrade path for databases created before the `title` column existed.
 try {
   db.exec("ALTER TABLE players ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+} catch (e) {
+  // already has the column
+}
+// Upgrade path for hotlap_runs created before per-car tracking.
+try {
+  db.exec("ALTER TABLE hotlap_runs ADD COLUMN car TEXT NOT NULL DEFAULT ''");
 } catch (e) {
   // already has the column
 }
@@ -97,15 +104,33 @@ const zoneLeaderboard = db.prepare(`
 `);
 
 const insertHotlapRun = db.prepare(`
-  INSERT INTO hotlap_runs (route_id, route_name, player_id, player_name, time_ms, created_at)
-  VALUES (?, ?, ?, ?, ?, ?)
+  INSERT INTO hotlap_runs (route_id, route_name, player_id, player_name, car, time_ms, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
 `);
-// Best (fastest) lap per player for a route, ranked ascending.
+// Best (fastest) lap per player for a route, ranked ascending (all cars).
 const hotlapLeaderboard = db.prepare(`
-  SELECT player_name AS playerName, MIN(time_ms) AS timeMs
+  SELECT player_name AS playerName, car, MIN(time_ms) AS timeMs
   FROM hotlap_runs
   WHERE route_id = ?
   GROUP BY player_id
+  ORDER BY timeMs ASC
+  LIMIT ?
+`);
+// Best lap per player for a route WITH a specific car, ranked ascending.
+const hotlapLeaderboardByCar = db.prepare(`
+  SELECT player_name AS playerName, car, MIN(time_ms) AS timeMs
+  FROM hotlap_runs
+  WHERE route_id = ? AND car = ?
+  GROUP BY player_id
+  ORDER BY timeMs ASC
+  LIMIT ?
+`);
+// Overall best lap for each car on a route (with who holds it), fastest cars first.
+const hotlapCars = db.prepare(`
+  SELECT car, player_name AS playerName, MIN(time_ms) AS timeMs, COUNT(DISTINCT player_id) AS drivers
+  FROM hotlap_runs
+  WHERE route_id = ? AND car <> ''
+  GROUP BY car
   ORDER BY timeMs ASC
   LIMIT ?
 `);
@@ -256,7 +281,7 @@ app.get('/drift/leaderboard/:zoneId', (req, res) => {
 });
 
 app.post('/hotlap/runs', (req, res) => {
-  const { routeId, routeName, playerId, playerName } = req.body || {};
+  const { routeId, routeName, playerId, playerName, car } = req.body || {};
   const timeMs = Number((req.body || {}).timeMs);
   if (!routeId || !playerId || !Number.isFinite(timeMs) || timeMs <= 0) {
     return res.status(400).json({ error: 'routeId, playerId, and positive numeric timeMs are required' });
@@ -266,14 +291,26 @@ app.post('/hotlap/runs', (req, res) => {
     routeName || routeId,
     playerId,
     playerName || 'Runner',
+    String(car || ''),
     Math.round(timeMs),
     Date.now()
   );
   res.status(201).json({ ok: true });
 });
 
+// Ranked players. With ?car=<id> it's that car's board; otherwise all cars.
 app.get('/hotlap/leaderboard/:routeId', (req, res) => {
-  res.json(hotlapLeaderboard.all(req.params.routeId, parseLimit(req.query.limit)));
+  const limit = parseLimit(req.query.limit);
+  const car = req.query.car;
+  if (car != null && car !== '') {
+    return res.json(hotlapLeaderboardByCar.all(req.params.routeId, String(car), limit));
+  }
+  res.json(hotlapLeaderboard.all(req.params.routeId, limit));
+});
+
+// Best lap for each car on a route (for the LAPS tab's per-car list).
+app.get('/hotlap/cars/:routeId', (req, res) => {
+  res.json(hotlapCars.all(req.params.routeId, parseLimit(req.query.limit)));
 });
 
 // --- Server-managed missions (routes + drift zones) ---

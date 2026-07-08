@@ -173,10 +173,26 @@ end
 -- Economy sync (wrapped in pcall — falls back to local-only silently)
 ---------------------------------------------------------------------------
 
-local economy = { leaderboardCash = {}, driftLeaderboards = {}, hotlapLeaderboards = {} }
+local economy = { leaderboardCash = {}, driftLeaderboards = {}, hotlapLeaderboards = {},
+  hotlapCars = {}, hotlapCarBoards = {} }
 
 local function economyEnabled()
   return CONFIG.economyUrl ~= nil and CONFIG.economyUrl ~= ''
+end
+
+-- Current car's model id (folder name), used to key per-car lap leaderboards.
+-- Cached once the API returns it. `prettyCar` makes a readable label.
+local _carId
+local function currentCarId()
+  if _carId then return _carId end
+  local id
+  pcall(function() id = ac.getCarID(0) end)
+  if type(id) == 'string' and id ~= '' then _carId = id end
+  return _carId or ''
+end
+local function prettyCar(id)
+  if type(id) ~= 'string' or id == '' then return '???' end
+  return (id:gsub('_', ' '))
 end
 
 -- Headers for a request. Always send a table (CSP's web.get/post take
@@ -308,6 +324,7 @@ local function economyReportHotlap(route, timeMs)
       routeName = route.name,
       playerId = storage.playerId,
       playerName = storage.playerName,
+      car = currentCarId(),
       timeMs = timeMs,
     },
     function(err, response) end)
@@ -319,6 +336,26 @@ local function economyRefreshHotlapLeaderboard(routeName)
     local data = safeJsonParse(response.body)
     if data then economy.hotlapLeaderboards[routeName] = data end
   end)
+end
+
+-- Per-car lap data for the LAPS tab: the best lap for each car on a route, and
+-- (lazily) the ranked board for one selected car.
+local function economyRefreshHotlapCars(routeName)
+  economyGet('/hotlap/cars/' .. urlEncode(routeName) .. '?limit=30', function(err, response)
+    if err or not response then return end
+    local data = safeJsonParse(response.body)
+    if data then economy.hotlapCars[routeName] = data end
+  end)
+end
+
+local function economyRefreshHotlapCarBoard(routeName, car)
+  if not car or car == '' then return end
+  economyGet('/hotlap/leaderboard/' .. urlEncode(routeName) .. '?limit=10&car=' .. urlEncode(car),
+    function(err, response)
+      if err or not response then return end
+      local data = safeJsonParse(response.body)
+      if data then economy.hotlapCarBoards[routeName .. '|' .. car] = data end
+    end)
 end
 
 -- Replace a list's contents in place (keeps the table reference the gameplay
@@ -438,6 +475,8 @@ local function finishRoute()
     local timeMs = math.floor(elapsed * 1000)
     economyReportHotlap(route, timeMs)
     economyRefreshHotlapLeaderboard(route.name)
+    economyRefreshHotlapCars(route.name)                     -- LAPS tab: per-car records
+    economyRefreshHotlapCarBoard(route.name, currentCarId())
     lastHotlap = { name = route.name, timeMs = timeMs, at = sessionTime }
   end
   run.active = false
@@ -1409,6 +1448,73 @@ local function leaderboardTab()
   end
 end
 
+-- LAPS tab: per-car hotlap records. Shows the best lap for each car (click a car
+-- to load its ranked board), plus the selected car's leaderboard. Defaults to
+-- whatever car you're currently driving.
+local lapsLastRefresh, lapsSelCar = -100, {}
+local function lapsTab()
+  local myCar = currentCarId()
+  local hasHotlap = false
+  for _, r in ipairs(ROUTES) do if r.hotlap then hasHotlap = true break end end
+  if not hasHotlap then ui.textColored('No lap routes yet.', DIM); return end
+
+  if economyEnabled() and sessionTime - lapsLastRefresh > 4 then
+    lapsLastRefresh = sessionTime
+    for _, r in ipairs(ROUTES) do
+      if r.hotlap then
+        economyRefreshHotlapCars(r.name)
+        local sel = lapsSelCar[r.name]
+        if (not sel or sel == '') then sel = myCar end
+        if sel ~= '' then economyRefreshHotlapCarBoard(r.name, sel) end
+      end
+    end
+  end
+
+  for _, r in ipairs(ROUTES) do
+    if r.hotlap then
+      ui.textColored('» ' .. tostring(r.name):upper() .. ' · LAP RECORDS', CYAN)
+      if myCar ~= '' then ui.textColored('Your car: ' .. prettyCar(myCar), DIM) end
+      ui.separator()
+      ui.textColored('BEST PER CAR  (click to see its board)', NEON)
+      local cars = economy.hotlapCars[r.name] or {}
+      if #cars == 0 then
+        ui.textColored(economyEnabled() and 'No laps yet — set one!' or 'Economy offline.', DIM)
+      else
+        for i, row in ipairs(cars) do
+          local mine = row.car == myCar
+          ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine(34)
+          if tintBtn(prettyCar(row.car) .. '##lc' .. i, mine and BTN_GO or BTN_INFO) then
+            lapsSelCar[r.name] = row.car
+            economyRefreshHotlapCarBoard(r.name, row.car)
+          end
+          ui.sameLine(320); ui.textColored(fmtLapTime(row.timeMs or 0), NEON)
+          ui.sameLine(430); ui.textColored(row.playerName or '???', WHITE)
+        end
+      end
+
+      ui.separator()
+      local sel = lapsSelCar[r.name]
+      if (not sel or sel == '') then sel = (myCar ~= '' and myCar) or (cars[1] and cars[1].car) or '' end
+      if sel == '' then
+        ui.textColored('Select a car above to see its leaderboard.', DIM)
+      else
+        ui.textColored('» ' .. prettyCar(sel):upper() .. ' · TOP LAPS', GOLD)
+        local board = economy.hotlapCarBoards[r.name .. '|' .. sel] or {}
+        if #board == 0 then
+          ui.textColored(economyEnabled() and 'No laps in this car yet.' or 'Economy offline.', DIM)
+        else
+          for i, row in ipairs(board) do
+            ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine(40)
+            ui.textColored(row.playerName or '???', WHITE); ui.sameLine(300)
+            ui.textColored(fmtLapTime(row.timeMs or 0), NEON)
+          end
+        end
+      end
+      ui.separator()
+    end
+  end
+end
+
 local function editorTab()
   if tintBtn((editor.mode == 'route' and '[ ROUTE ]' or 'ROUTE') .. '##emr', editor.mode == 'route' and BTN_GO or BTN_MUTED) then editor.mode = 'route' end
   ui.sameLine()
@@ -1478,6 +1584,7 @@ local function drawApp()
         ui.tabItem('MISSIONS', missionsTab)
         ui.tabItem('SHOP', shopTab)
         ui.tabItem('LEADERBOARD', leaderboardTab)
+        ui.tabItem('LAPS', lapsTab)
         if CONFIG.showEditor then ui.tabItem('EDITOR', editorTab) end
       end)
     end)
