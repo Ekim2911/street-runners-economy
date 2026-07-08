@@ -333,8 +333,8 @@ app.get('/routes', (req, res) => {
 
 app.post('/routes', (req, res) => {
   const { kind, name, data } = req.body || {};
-  if ((kind !== 'route' && kind !== 'zone') || !name || typeof data !== 'object' || data == null) {
-    return res.status(400).json({ error: "kind ('route'|'zone'), name, and data object are required" });
+  if (!['route', 'zone', 'delivery'].includes(kind) || !name || typeof data !== 'object' || data == null) {
+    return res.status(400).json({ error: "kind ('route'|'zone'|'delivery'), name, and data object are required" });
   }
   if (!Array.isArray(data.points) || data.points.length < 2) {
     return res.status(400).json({ error: 'data.points must have at least 2 points' });
