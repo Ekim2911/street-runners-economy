@@ -24,10 +24,11 @@ local CONFIG = {
   -- Cops: to go on duty a player must be LEVEL >= copLevel AND driving a car
   -- whose id contains one of copCars (lower-case substring match). Add your
   -- server's cop car folder names here.
-  copLevel = 1,               -- TEMP for testing (normally 20) — set back before going public
+  copLevel = 20,
   copCars = { 'police', 'sheriff', 'patrol', 'crown_victoria', 'interceptor', 'charger_police',
               'acpursuit', 'undercover', 'sayrx_dodge_charger_undercover' },
   levelXpK = 250,             -- level = floor(1 + sqrt(lifetimeEarned / levelXpK))
+  devSteamIds = { '76561199438773448' },   -- these players are always max level (dev/admin)
   drift = {
     minAngle = 15,            -- degrees of slip before scoring starts
     spinAngle = 100,          -- degrees of slip that counts as a spin (wipes combo)
@@ -213,9 +214,18 @@ local function prettyCar(id)
   return (id:gsub('_', ' '))
 end
 
+-- Dev/admin players (by Steam id) are always maxed — keeps cop/dev access without
+-- grinding, gated to specific ids so it isn't open to everyone.
+local function isDev()
+  local pid = tostring(storage.playerId or '')
+  for _, id in ipairs(CONFIG.devSteamIds or {}) do if pid == id then return true end end
+  return false
+end
+
 -- Player level from lifetime earnings. Level 1 at 0, ~level 20 near 90k earned
 -- with the default levelXpK. `levelProgress` returns 0..1 toward the next level.
 local function playerLevel()
+  if isDev() then return 99 end
   local e = math.max(0, storage.lifetimeEarned or 0)
   return math.floor(1 + math.sqrt(e / CONFIG.levelXpK))
 end
