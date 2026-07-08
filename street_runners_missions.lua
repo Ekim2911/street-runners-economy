@@ -340,11 +340,17 @@ local function economyLoadMissions()
     for _, m in ipairs(data) do
       local d = m.data
       if type(d) == 'table' and type(d.points) == 'table' and #d.points >= 2 then
-        local pts = {}
-        for _, p in ipairs(d.points) do pts[#pts + 1] = vec3(p.x or 0, p.y or 0, p.z or 0) end
+        local pts, dirs, hws = {}, {}, {}
+        for _, p in ipairs(d.points) do
+          pts[#pts + 1] = vec3(p.x or 0, p.y or 0, p.z or 0)
+          -- optional baked road tangent + asphalt half-widths (from gen_h1_hotlap)
+          if p.dx and p.dz then dirs[#pts] = { tonumber(p.dx), tonumber(p.dz) } end
+          if p.hwl and p.hwr then hws[#pts] = { tonumber(p.hwl), tonumber(p.hwr) } end
+        end
         if m.kind == 'route' then
           routes[#routes + 1] = { _id = m.id, name = d.name or m.name, target = d.target or 45,
             baseReward = d.baseReward or 500, bonusPerSecond = d.bonusPerSecond or 25, points = pts,
+            dirs = next(dirs) and dirs or nil, hws = next(hws) and hws or nil,
             hotlap = d.hotlap == true, checkpointRadius = tonumber(d.checkpointRadius) }
         elseif m.kind == 'zone' then
           zones[#zones + 1] = { _id = m.id, name = d.name or m.name, width = d.width or 8,
@@ -534,10 +540,15 @@ local function updateHotlapAutostart(car)
   for _, route in ipairs(ROUTES) do
     if route.hotlap and #route.points >= 2 then
       local p1, p2 = route.points[1], route.points[2]
-      local ddx, ddz = p2.x - p1.x, p2.z - p1.z
-      local len = math.sqrt(ddx * ddx + ddz * ddz)
-      if len < 0.001 then len = 1 end
-      local fdx, fdz = ddx / len, ddz / len                 -- forward along the track
+      local fdx, fdz
+      if route.dirs and route.dirs[1] then
+        fdx, fdz = route.dirs[1][1], route.dirs[1][2]        -- baked tangent = drawn line normal
+      else
+        local ddx, ddz = p2.x - p1.x, p2.z - p1.z
+        local len = math.sqrt(ddx * ddx + ddz * ddz)
+        if len < 0.001 then len = 1 end
+        fdx, fdz = ddx / len, ddz / len                      -- forward along the track
+      end
       local ox, oz = car.position.x - p1.x, car.position.z - p1.z
       local fwd = ox * fdx + oz * fdz                        -- signed distance in front of line
       local lat = math.abs(ox * (-fdz) + oz * fdx)           -- distance from the line's center
@@ -999,16 +1010,29 @@ function script.draw3D()
           -- a hotlap's closing point sits on top of the start line — skip drawing
           -- it so there's just ONE line there (the start line shows the finish).
           if not (route.hotlap and i == #pts) then
-            local a, b = (i < #pts) and p or pts[i - 1], (i < #pts) and pts[i + 1] or p
-            local dx, dz = dirXZ(a, b)
-            local ax, az = perpXZ(a, b)
+            -- orientation: baked road tangent if present (straight across the road),
+            -- else fall back to the chord toward the neighbouring checkpoint
+            local dx, dz, ax, az
+            if route.dirs and route.dirs[i] then
+              dx, dz = route.dirs[i][1], route.dirs[i][2]
+              ax, az = -dz, dx
+            else
+              local a, b = (i < #pts) and p or pts[i - 1], (i < #pts) and pts[i + 1] or p
+              dx, dz = dirXZ(a, b); ax, az = perpXZ(a, b)
+            end
             local m = M_CHECK
             if i == 1 then m = finishing and M_FINISH or M_START end
             if i == #pts and not route.hotlap then m = M_FINISH end
             if run.active and run.route == route and run.index == i then m = M_ACTIVE end
-            local fb = route.checkpointRadius or CONFIG.checkpointRadius
-            local e = roadEdges(p, ax, az, fb)                     -- span the actual road
-            groundLaser(p, dx, dz, ax, az, e.l, e.r, m[1], m[2], m[3])
+            -- width: baked asphalt half-widths if present, else probe the road
+            local hl, hr
+            if route.hws and route.hws[i] then
+              hl, hr = route.hws[i][1], route.hws[i][2]
+            else
+              local e = roadEdges(p, ax, az, route.checkpointRadius or CONFIG.checkpointRadius)
+              hl, hr = e.l, e.r
+            end
+            groundLaser(p, dx, dz, ax, az, hl, hr, m[1], m[2], m[3])
           end
         end
         -- (no floating START/FINISH text — render.debugText draws through walls at
@@ -1236,11 +1260,16 @@ local TP_BACK = 3.0        -- metres to sit behind the start line: setCarPositio
                           -- ORIGIN, so ~half a car length + a couple feet puts the NOSE behind the line
 local TP_LANE_SIGN = 1     -- which side is the "far right" lane; flip to -1 if it lands on the left
 local teleportMsg, teleportMsgUntil = '', -1
-local function teleportTo(pts, radius)
+local function teleportTo(pts, radius, dir)
   if not pts or #pts < 1 then return end
   local p = pts[1]
-  local dx, dz = dirXZ(pts[1], pts[2] or pts[1])
-  local ax, az = perpXZ(pts[1], pts[2] or pts[1])
+  local dx, dz, ax, az
+  if dir then                                    -- baked road tangent = truest heading
+    dx, dz = dir[1], dir[2]; ax, az = -dz, dx
+  else
+    dx, dz = dirXZ(pts[1], pts[2] or pts[1])
+    ax, az = perpXZ(pts[1], pts[2] or pts[1])
+  end
   local px, py, pz = p.x, p.y + 0.4, p.z
   if radius then
     -- drop into the far-right lane, a bit behind the line
@@ -1274,7 +1303,7 @@ local function missionsTab()
       ui.textColored((active and '● ' or '') .. r.name, active and YEL3 or WHITE); ui.sameLine(230)
       ui.textColored(money(r.baseReward) .. ' +bonus', GOLD); ui.sameLine(345)
       if tintBtn('Start##r' .. i, BTN_GO) then startRoute(r); appOpen = false end
-      ui.sameLine(); if tintBtn('TP##tpr' .. i, BTN_INFO) then teleportTo(r.points, r.checkpointRadius or CONFIG.checkpointRadius) end
+      ui.sameLine(); if tintBtn('TP##tpr' .. i, BTN_INFO) then teleportTo(r.points, r.checkpointRadius or CONFIG.checkpointRadius, r.dirs and r.dirs[1]) end
       if r._id then ui.sameLine(); if tintBtn('x##dr' .. r._id, BTN_DANGER) then economyDeleteMission(r._id) end end
     end
   end
