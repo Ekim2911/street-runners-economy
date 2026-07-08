@@ -42,6 +42,12 @@ local DRIFT_ZONES = {
   --   points = { vec3(0, 0, 0), vec3(80, 0, 20), vec3(140, 0, 90) } },
 }
 
+-- Smuggling runs: drive to the pickup, then to the drop without the heat maxing
+-- out. points[1] = pickup, points[#] = dropoff.
+local DELIVERIES = {
+  -- { name = "Dockside Drop", reward = 3000, points = { vec3(0,0,0), vec3(200,0,90) } },
+}
+
 -- Spend sink: cosmetic titles (permanent) and payout boosts (consumable).
 local SHOP_ITEMS = {
   titles = {
@@ -279,6 +285,11 @@ local function zonePostBody(z)
     jsStr(z.name), jsStr(z.name), math.floor(z.width), math.floor(z.payoutPer), jsPoints(z.points))
 end
 
+local function deliveryPostBody(d)
+  return string.format('{"kind":"delivery","name":%s,"data":{"name":%s,"reward":%d,"points":%s}}',
+    jsStr(d.name), jsStr(d.name), math.floor(d.reward or 3000), jsPoints(d.points))
+end
+
 local function economyEarn(amount, source)
   local applied = amount
   if applied > 0 then applied = math.floor(applied * activeBoostMultiplier()) end
@@ -373,7 +384,7 @@ local function economyLoadMissions()
     if err or not response then return end
     local data = safeJsonParse(response.body)
     if not data then return end
-    local routes, zones = {}, {}
+    local routes, zones, deliveries = {}, {}, {}
     for _, m in ipairs(data) do
       local d = m.data
       if type(d) == 'table' and type(d.points) == 'table' and #d.points >= 2 then
@@ -392,9 +403,13 @@ local function economyLoadMissions()
         elseif m.kind == 'zone' then
           zones[#zones + 1] = { _id = m.id, name = d.name or m.name, width = d.width or 8,
             payoutPer = d.payoutPer or 2, points = pts }
+        elseif m.kind == 'delivery' then
+          deliveries[#deliveries + 1] = { _id = m.id, name = d.name or m.name,
+            reward = tonumber(d.reward) or 3000, points = pts }
         end
       end
     end
+    rebuildList(DELIVERIES, deliveries)
     rebuildList(ROUTES, routes)
     rebuildList(DRIFT_ZONES, zones)
   end)
@@ -406,6 +421,10 @@ end
 
 local function economySaveZone(z)
   economyPostRaw('/routes', zonePostBody(z), function(err, response) economyLoadMissions() end)
+end
+
+local function economySaveDelivery(d)
+  economyPostRaw('/routes', deliveryPostBody(d), function(err, response) economyLoadMissions() end)
 end
 
 local function economyDeleteMission(id)
@@ -603,15 +622,128 @@ local function updateHotlapAutostart(car)
 end
 
 ---------------------------------------------------------------------------
+-- Delivery / smuggling runs: pickup -> drop without the heat maxing out.
+-- "Cop attention" = a heat meter that climbs when you drive recklessly near
+-- traffic (fast + close to other cars). Max it out and the cops are on you
+-- (WANTED) — you must cool down to shake them or you get busted and lose the
+-- cargo. Deliver clean for the biggest payout.
+---------------------------------------------------------------------------
+
+local DLV = {
+  radius     = 12,     -- reach radius for pickup / drop (m)
+  heatSpeed  = 70,     -- km/h above which being near traffic generates heat
+  nearDist   = 22,     -- m to an AI car that counts as "near"
+  heatRise   = 55,     -- heat/s at point-blank + high speed
+  heatDecay  = 22,     -- heat/s bled off when driving clean
+  cool       = 35,     -- drop below this while WANTED to shake the cops
+  wantedTime = 10,     -- seconds of sustained heat before you're busted
+  stealthPer = 40,     -- bonus cash per point of (100-heat) kept on delivery
+}
+
+local delivery = { active = false, mission = nil, stage = 'pickup',
+  heat = 0, wanted = false, bustTimer = 0, startTime = 0, msg = '', msgUntil = -1 }
+
+local function deliveryMsg(t) delivery.msg, delivery.msgUntil = t, sessionTime + 4 end
+
+local function startDelivery(m)
+  run.active = false; run.route = nil                 -- one job at a time
+  delivery.active, delivery.mission = true, m
+  delivery.stage, delivery.heat = 'pickup', 0
+  delivery.wanted, delivery.bustTimer = false, 0
+  delivery.startTime = sessionTime
+  deliveryMsg('Go to the PICKUP')
+end
+
+local function deliveryComplete()
+  local m = delivery.mission
+  local bonus = math.floor(math.max(0, 100 - delivery.heat) * DLV.stealthPer)
+  local payout = (m.reward or 3000) + bonus
+  economyEarn(payout, 'delivery:' .. m.name)
+  deliveryMsg(string.format('DELIVERED  +%s  (stealth +%s)', money(payout), money(bonus)))
+  delivery.active, delivery.mission, delivery.wanted = false, nil, false
+end
+
+local function deliveryFail(reason)
+  deliveryMsg(reason or 'BUSTED — cargo lost')
+  delivery.active, delivery.mission, delivery.wanted = false, nil, false
+end
+
+-- distance (XZ) to the nearest OTHER car (traffic/players); big number if alone
+local function nearestOtherCarDist(me)
+  local best = 1e9
+  pcall(function()
+    local n = 64
+    local sim = ac.getSim and ac.getSim()
+    if sim and sim.carsCount then n = sim.carsCount end
+    for i = 1, n - 1 do
+      local o = ac.getCar(i)
+      if o and o.position then
+        local dx, dz = o.position.x - me.position.x, o.position.z - me.position.z
+        local d = math.sqrt(dx * dx + dz * dz)
+        if d < best then best = d end
+      end
+    end
+  end)
+  return best
+end
+
+local function updateDelivery(car, dt)
+  if not delivery.active then return end
+  local m = delivery.mission
+  local spd = car.speedKmh or 0
+
+  -- heat: reckless near traffic pushes it up; clean driving bleeds it off
+  local nd = nearestOtherCarDist(car)
+  if nd < DLV.nearDist and spd > DLV.heatSpeed then
+    local closeF = (DLV.nearDist - nd) / DLV.nearDist          -- 0..1, closer = more
+    local fastF  = (spd - DLV.heatSpeed) / DLV.heatSpeed        -- grows with speed
+    delivery.heat = delivery.heat + DLV.heatRise * closeF * fastF * dt
+  else
+    delivery.heat = delivery.heat - DLV.heatDecay * dt
+  end
+  if delivery.heat < 0 then delivery.heat = 0 end
+  if delivery.heat > 100 then delivery.heat = 100 end
+
+  -- WANTED: max heat alerts the cops to your position; cool down or get busted
+  if not delivery.wanted and delivery.heat >= 100 then
+    delivery.wanted, delivery.bustTimer = true, 0
+    deliveryMsg('COPS ON YOU — LOSE THEM!')
+  end
+  if delivery.wanted then
+    if delivery.heat <= DLV.cool then
+      delivery.wanted = false
+      deliveryMsg("Lost 'em — make the drop")
+    else
+      delivery.bustTimer = delivery.bustTimer + dt
+      if delivery.bustTimer >= DLV.wantedTime then deliveryFail('BUSTED — cargo lost'); return end
+    end
+  end
+
+  -- pickup -> dropoff progression
+  local pickup, drop = m.points[1], m.points[#m.points]
+  if delivery.stage == 'pickup' then
+    if dist2D(car.position, pickup) <= DLV.radius then
+      delivery.stage = 'dropoff'
+      deliveryMsg('Cargo loaded — DELIVER it, stay cool')
+    end
+  else
+    if not delivery.wanted and dist2D(car.position, drop) <= DLV.radius then
+      deliveryComplete()
+    end
+  end
+end
+
+---------------------------------------------------------------------------
 -- Editor (route + zone capture, shared buffer)
 ---------------------------------------------------------------------------
 
 local editor = {
-  mode = 'route',        -- 'route' | 'zone'
+  mode = 'route',        -- 'route' | 'zone' | 'delivery'
   points = {},
   name = 'New Route',
   target = 45, baseReward = 500, bonusPerSecond = 25,   -- route fields
   width = 8, payoutPer = 2,                              -- zone fields
+  reward = 3000,                                         -- delivery field
   captureReq = false,    -- set by the button/hotkey; fulfilled in draw3D where track rays work
   freeCam = true,        -- true = drop where the camera aims (fly free cam); false = at the car
 }
@@ -729,7 +861,7 @@ local function updateEditorHotkeys(car, dt)
 
   if not CONFIG.showEditor or not ctrlDown then return end
   if e1 then editorCapture() end
-  if e4 then editor.mode = (editor.mode == 'route') and 'zone' or 'route'; editorSetMessage('Mode: ' .. editor.mode) end
+  if e4 then editor.mode = editor.mode == 'route' and 'zone' or (editor.mode == 'zone' and 'delivery' or 'route'); editorSetMessage('Mode: ' .. editor.mode) end
   if e5 then editorClear(); editorSetMessage('Cleared points') end
   if e2 then
     if #editor.points < 2 then
@@ -738,13 +870,16 @@ local function updateEditorHotkeys(car, dt)
       startRoute({ name = editor.name, target = editor.target, baseReward = editor.baseReward,
         bonusPerSecond = editor.bonusPerSecond, points = editor.points })
       editorSetMessage('Test drive started')
+    elseif editor.mode == 'delivery' then
+      startDelivery({ name = editor.name, reward = editor.reward, points = editor.points })
+      editorSetMessage('Test delivery started')
     else
       table.insert(DRIFT_ZONES, { name = editor.name, width = editor.width, payoutPer = editor.payoutPer, points = editor.points })
       editorSetMessage('Test zone added')
     end
   end
   if e3 then
-    if editor.mode == 'route' then editorCopyRoute() else editorCopyZone() end
+    if editor.mode == 'route' then editorCopyRoute() elseif editor.mode == 'zone' then editorCopyZone() end
     editorSetMessage('Copied to clipboard + log')
   end
 end
@@ -778,6 +913,7 @@ function script.update(dt)
   updateHotlapAutostart(car)
   updateCheckpoints(car)
   updateDriftZones(car, dt)
+  updateDelivery(car, dt)
   updateEditorHotkeys(car, dt)
 
   if shopMessageTimer > 0 then shopMessageTimer = shopMessageTimer - dt end
@@ -1078,9 +1214,63 @@ local function editorFulfilCapture()
   end
 end
 
+-- A tall glowing pillar + ground ring marking a delivery pickup/drop, visible
+-- from a distance. Additive so it reads as light.
+local function beacon(pos, r, g, b)
+  local blended = false
+  pcall(function() render.setBlendMode(render.BlendMode.BlendAdd); blended = true end)
+  local baseY, h = pos.y + 0.1, 18
+  local pulse = 0.8 + 0.2 * math.sin(sessionTime * 3)
+  local br, bg, bb = math.min(1, r + 0.4), math.min(1, g + 0.4), math.min(1, b + 0.4)
+  local function vshell(rad, a, cr, cg, cb)
+    for k = 0, 7 do
+      local t0, t1 = k / 8 * math.pi * 2, (k + 1) / 8 * math.pi * 2
+      local c0, s0, c1, s1 = math.cos(t0), math.sin(t0), math.cos(t1), math.sin(t1)
+      pcall(function()
+        local a0 = vec3(pos.x + rad * c0, baseY, pos.z + rad * s0)
+        local a1 = vec3(pos.x + rad * c1, baseY, pos.z + rad * s1)
+        local b1 = vec3(pos.x + rad * c1, baseY + h, pos.z + rad * s1)
+        local b0 = vec3(pos.x + rad * c0, baseY + h, pos.z + rad * s0)
+        local col = rgbm(cr, cg, cb, a)
+        render.quad(a0, a1, b1, b0, col); render.quad(b0, b1, a1, a0, col)
+      end)
+    end
+  end
+  vshell(1.4 * pulse, 0.05, r, g, b)
+  vshell(0.8, 0.12, r, g, b)
+  vshell(0.4, 0.40, br, bg, bb)
+  -- pulsing ground ring at the trigger radius
+  local rr = DLV.radius - 0.6
+  for k = 0, 23 do
+    local t0, t1 = k / 24 * math.pi * 2, (k + 1) / 24 * math.pi * 2
+    pcall(function()
+      render.quad(
+        vec3(pos.x + rr * math.cos(t0), baseY, pos.z + rr * math.sin(t0)),
+        vec3(pos.x + rr * math.cos(t1), baseY, pos.z + rr * math.sin(t1)),
+        vec3(pos.x + (rr + 0.7) * math.cos(t1), baseY, pos.z + (rr + 0.7) * math.sin(t1)),
+        vec3(pos.x + (rr + 0.7) * math.cos(t0), baseY, pos.z + (rr + 0.7) * math.sin(t0)),
+        rgbm(br, bg, bb, 0.28))
+    end)
+  end
+  if blended then pcall(function() render.setBlendMode(render.BlendMode.AlphaBlend) end) end
+end
+
 function script.draw3D()
   pcall(function()
     render.setDepthMode(render.DepthMode.ReadOnlyLessEqual)
+
+    -- Active delivery: beacon the current objective (green pickup / gold drop,
+    -- flashing red while the cops are on you).
+    if delivery.active and delivery.mission then
+      local m = delivery.mission
+      if delivery.stage == 'pickup' then
+        beacon(m.points[1], 0.30, 1.00, 0.45)
+      elseif delivery.wanted then
+        beacon(m.points[#m.points], 1.00, 0.12, 0.10)
+      else
+        beacon(m.points[#m.points], 1.00, 0.75, 0.20)
+      end
+    end
 
     -- Checkpoint routes: green start → cyan checkpoints → red finish, with the
     -- current target in yellow. Every road uses this exact code + the flat laser.
@@ -1330,6 +1520,24 @@ local function drawMainHUD()
     ui.textColored(string.format('%s   %d°   %d km/h', drift.state:upper(), math.floor(drift.angle), math.floor(carSpeed())), stateCol)
   end
 
+  if delivery.active and delivery.mission then
+    ui.separator()
+    ui.textColored('» DELIVERY  ' .. tostring(delivery.mission.name):upper(), GOLD)
+    ui.textColored(delivery.stage == 'pickup' and 'GO TO PICKUP' or (delivery.wanted and 'SHAKE THE COPS!' or 'DELIVER THE GOODS'),
+      delivery.wanted and REDC or (delivery.stage == 'pickup' and NEON or GOLD))
+    local hf = delivery.heat / 100
+    local heatCol = delivery.heat >= 100 and REDC or (delivery.heat > 60 and GOLD or NEON)
+    ui.textColored('HEAT ', DIM); ui.sameLine()
+    ui.textColored(meter(hf, 12), heatCol); ui.sameLine()
+    ui.textColored(string.format('%d%%', math.floor(delivery.heat)), heatCol)
+    if delivery.wanted then
+      ui.textColored(string.format('WANTED — lose them! %.0fs', math.max(0, DLV.wantedTime - delivery.bustTimer)), REDC)
+    end
+  end
+  if delivery.msg ~= '' and sessionTime < delivery.msgUntil then
+    ui.textColored(delivery.msg, WHITE)
+  end
+
   ui.separator()
   ui.textColored('Ctrl+6 app · drag move', DIM)
   ui.textColored(string.format('Ctrl+8/9 resize (%.1fx)%s', uiScale, scaleWorks and '' or ' [box only]'), DIM)
@@ -1379,6 +1587,11 @@ local function missionsTab()
   elseif drift.active and drift.zone then
     ui.textColored(string.format('● DRIFTING  %s   score %s', drift.zone.name, comma(drift.score)), MAGENTA)
     accentSep(MAGENTA)
+  elseif delivery.active and delivery.mission then
+    ui.textColored(string.format('● DELIVERY  %s   %s  heat %d%%', delivery.mission.name,
+      delivery.stage == 'pickup' and 'to pickup' or 'to drop', math.floor(delivery.heat)), GOLD)
+    ui.sameLine(); if tintBtn('Cancel##cxd', BTN_DANGER) then delivery.active = false; delivery.mission = nil end
+    accentSep(GOLD)
   end
 
   ui.textColored('» ROUTES', CYAN)
@@ -1405,6 +1618,20 @@ local function missionsTab()
       ui.textColored('$' .. z.payoutPer .. '/pt', GOLD); ui.sameLine(345)
       if tintBtn('TP##tpz' .. i, BTN_INFO) then teleportTo(z.points) end
       if z._id then ui.sameLine(); if tintBtn('x##dz' .. z._id, BTN_DANGER) then economyDeleteMission(z._id) end end
+    end
+  end
+  ui.separator()
+  ui.textColored('» DELIVERIES', GOLD)
+  if #DELIVERIES == 0 then
+    ui.textColored('   No deliveries yet — capture some in the Editor tab.', DIM)
+  else
+    for i, d in ipairs(DELIVERIES) do
+      local active = delivery.active and delivery.mission == d
+      ui.textColored((active and '● ' or '') .. d.name, active and GOLD or WHITE); ui.sameLine(230)
+      ui.textColored(money(d.reward) .. ' +stealth', GOLD); ui.sameLine(345)
+      if tintBtn('Start##dl' .. i, BTN_GO) then startDelivery(d); appOpen = false end
+      ui.sameLine(); if tintBtn('TP##tpd' .. i, BTN_INFO) then teleportTo(d.points) end
+      if d._id then ui.sameLine(); if tintBtn('x##dd' .. d._id, BTN_DANGER) then economyDeleteMission(d._id) end end
     end
   end
   if sessionTime < teleportMsgUntil then ui.textColored(teleportMsg, CYAN) end
@@ -1567,6 +1794,8 @@ local function editorTab()
   if tintBtn((editor.mode == 'route' and '[ ROUTE ]' or 'ROUTE') .. '##emr', editor.mode == 'route' and BTN_GO or BTN_MUTED) then editor.mode = 'route' end
   ui.sameLine()
   if tintBtn((editor.mode == 'zone' and '[ ZONE ]' or 'ZONE') .. '##emz', editor.mode == 'zone' and BTN_GO or BTN_MUTED) then editor.mode = 'zone' end
+  ui.sameLine()
+  if tintBtn((editor.mode == 'delivery' and '[ DELIVERY ]' or 'DELIVERY') .. '##emd', editor.mode == 'delivery' and BTN_GO or BTN_MUTED) then editor.mode = 'delivery' end
   ui.sameLine(); ui.textColored('points: ' .. #editor.points, DIM)
 
   ui.textColored('name', DIM); ui.sameLine()
@@ -1598,6 +1827,18 @@ local function editorTab()
         if nm == '' or nm == 'New Route' then nm = 'Route ' .. tostring(os.time() % 100000) end
         economySaveRoute({ name = nm, target = editor.target, baseReward = editor.baseReward,
           bonusPerSecond = editor.bonusPerSecond, points = editor.points })
+        editorSetMessage('Saved "' .. nm .. '" — now in Missions')
+      end
+    end
+  elseif editor.mode == 'delivery' then
+    ui.textColored('point 1 = pickup · last point = drop', DIM)
+    if tintBtn('Save delivery##esvd', BTN_GO) then
+      if #editor.points < 2 then editorSetMessage('Need 2 points (pickup + drop)')
+      elseif not economyEnabled() then editorSetMessage('Economy offline — cannot save')
+      else
+        local nm = editor.name
+        if nm == '' or nm == 'New Route' then nm = 'Delivery ' .. tostring(os.time() % 100000) end
+        economySaveDelivery({ name = nm, reward = editor.reward, points = editor.points })
         editorSetMessage('Saved "' .. nm .. '" — now in Missions')
       end
     end
