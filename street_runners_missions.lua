@@ -21,6 +21,12 @@ local CONFIG = {
   economyUrl = 'https://street-runners-economy-production.up.railway.app',  -- blank = local-only mode
   apiKey = '',                -- must match ECONOMY_API_KEY on the server, if set
   playerName = 'Runner',      -- shown on leaderboards until the player renames via the editor
+  -- Cops: to go on duty a player must be LEVEL >= copLevel AND driving a car
+  -- whose id contains one of copCars (lower-case substring match). Add your
+  -- server's cop car folder names here.
+  copLevel = 20,
+  copCars = { 'police', 'cop', 'sheriff', 'patrol', 'crown_victoria', 'interceptor', 'charger_police' },
+  levelXpK = 250,             -- level = floor(1 + sqrt(lifetimeEarned / levelXpK))
   drift = {
     minAngle = 15,            -- degrees of slip before scoring starts
     spinAngle = 100,          -- degrees of slip that counts as a spin (wipes combo)
@@ -77,7 +83,12 @@ local storage = ac.storage({
   boostId = '',
   boostExpiry = 0,
   boostMultiplier = 1,
+  lifetimeEarned = 0,      -- total cash ever earned; drives player level
 }, 'street_runners_v3')
+
+-- Backfill lifetime earnings for players who existed before levels: assume at
+-- least their current balance was earned, so they aren't reset to level 1.
+if (storage.lifetimeEarned or 0) < (storage.cash or 0) then storage.lifetimeEarned = storage.cash or 0 end
 
 local function isValidSteamId(s)
   return type(s) == 'string' and s:match('^%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d+$') ~= nil
@@ -201,6 +212,34 @@ local function prettyCar(id)
   return (id:gsub('_', ' '))
 end
 
+-- Player level from lifetime earnings. Level 1 at 0, ~level 20 near 90k earned
+-- with the default levelXpK. `levelProgress` returns 0..1 toward the next level.
+local function playerLevel()
+  local e = math.max(0, storage.lifetimeEarned or 0)
+  return math.floor(1 + math.sqrt(e / CONFIG.levelXpK))
+end
+local function xpForLevel(l) return CONFIG.levelXpK * (l - 1) * (l - 1) end
+local function levelProgress()
+  local l = playerLevel()
+  local cur, nxt = xpForLevel(l), xpForLevel(l + 1)
+  local e = math.max(0, storage.lifetimeEarned or 0)
+  if nxt <= cur then return 1 end
+  return math.max(0, math.min(1, (e - cur) / (nxt - cur)))
+end
+
+-- Cop duty: driving a cop car AND high enough level.
+local function isCopCar(id)
+  if type(id) ~= 'string' or id == '' then return false end
+  local low = id:lower()
+  for _, pat in ipairs(CONFIG.copCars) do
+    if low:find(pat, 1, true) then return true end
+  end
+  return false
+end
+local function copEligible()
+  return playerLevel() >= CONFIG.copLevel and isCopCar(currentCarId())
+end
+
 -- Headers for a request. Always send a table (CSP's web.get/post take
 -- headers as the 2nd arg); include JSON content-type for posts and the
 -- optional shared secret.
@@ -294,6 +333,7 @@ local function economyEarn(amount, source)
   local applied = amount
   if applied > 0 then applied = math.floor(applied * activeBoostMultiplier()) end
   storage.cash = storage.cash + applied
+  if applied > 0 then storage.lifetimeEarned = (storage.lifetimeEarned or 0) + applied end
   economyPost('/players/' .. storage.playerId .. '/earn',
     { amount = applied, source = source, name = storage.playerName, title = storage.equippedTitle },
     function(err, response) end)
@@ -1488,6 +1528,15 @@ local function drawMainHUD()
   ui.textColored('街道走者', NEON); ui.sameLine()
   ui.textColored('«' .. titleDisplayName(storage.equippedTitle):upper() .. '»', GOLD)
   ui.textColored('BALANCE  ', DIM); ui.sameLine(); ui.textColored(money(storage.cash), WHITE)
+  ui.textColored(string.format('LVL %d', playerLevel()), CYAN); ui.sameLine()
+  ui.textColored(meter(levelProgress(), 8), CYAN)
+  if isCopCar(currentCarId()) then
+    if playerLevel() >= CONFIG.copLevel then
+      ui.textColored('COP CAR · ON DUTY', NEON)
+    else
+      ui.textColored(string.format('COP CAR · need LVL %d', CONFIG.copLevel), DIM)
+    end
+  end
 
   if activeBoostMultiplier() > 1 then
     ui.textColored(string.format('» %dx BOOST  %s', storage.boostMultiplier, formatDuration(activeBoostRemaining())), MAGENTA)
