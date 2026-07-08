@@ -612,10 +612,14 @@ local editor = {
   name = 'New Route',
   target = 45, baseReward = 500, bonusPerSecond = 25,   -- route fields
   width = 8, payoutPer = 2,                              -- zone fields
+  captureReq = false,    -- set by the button/hotkey; fulfilled in draw3D where track rays work
+  freeCam = true,        -- true = drop where the camera aims (fly free cam); false = at the car
 }
 
-local function editorCapture(car)
-  table.insert(editor.points, vec3(car.position.x, car.position.y, car.position.z))
+-- Request a point drop. The actual placement (a track raycast from the camera)
+-- runs in script.draw3D, where render.createRay works; see editorFulfilCapture.
+local function editorCapture()
+  editor.captureReq = true
 end
 
 local function editorClear()
@@ -724,7 +728,7 @@ local function updateEditorHotkeys(car, dt)
   end
 
   if not CONFIG.showEditor or not ctrlDown then return end
-  if e1 then editorCapture(car); editorSetMessage('Captured point ' .. #editor.points) end
+  if e1 then editorCapture() end
   if e4 then editor.mode = (editor.mode == 'route') and 'zone' or 'route'; editorSetMessage('Mode: ' .. editor.mode) end
   if e5 then editorClear(); editorSetMessage('Cleared points') end
   if e2 then
@@ -1032,6 +1036,48 @@ local function drawGate(p, dx, dz, ax, az, halfW, r, g, b)
   render.debugLine(vec3(Lx, by + 0.05, Lz), vec3(Rx, by + 0.05, Rz), rgbm(br, bg, bb, 1.0))
 end
 
+-- Fulfil a pending editor capture (requested by the button/hotkey). In free-cam
+-- mode, raycast from the camera to the track and drop the point where you're
+-- aiming (fly around, look at a spot, Capture); if you're aiming at the sky it
+-- drops straight below the camera. Otherwise (CAR mode / no camera) it drops at
+-- the car. Runs here in draw3D because render.createRay is only valid at render.
+local function editorFulfilCapture()
+  if not editor.captureReq then return end
+  editor.captureReq = false
+  local pt
+  if editor.freeCam then
+    local cp
+    pcall(function() cp = ac.getCameraPosition() end)
+    if cp then
+      local cf
+      pcall(function() cf = ac.getCameraForward() end)
+      if not cf then pcall(function() cf = ac.getCameraDirection() end) end
+      if cf then
+        pcall(function()
+          local d = render.createRay(vec3(cp.x, cp.y, cp.z), vec3(cf.x, cf.y, cf.z), 5000):track()
+          if d and d > 0 then pt = vec3(cp.x + cf.x * d, cp.y + cf.y * d, cp.z + cf.z * d) end
+        end)
+      end
+      if not pt then   -- aiming at the sky → drop straight below the camera
+        pcall(function()
+          local d = render.createRay(vec3(cp.x, cp.y, cp.z), vec3(0, -1, 0), 5000):track()
+          if d and d > 0 then pt = vec3(cp.x, cp.y - d, cp.z) end
+        end)
+      end
+    end
+  end
+  if not pt then                                     -- CAR mode, or camera/ray unavailable
+    local car = ac.getCar(0)
+    if car then pt = vec3(car.position.x, car.position.y, car.position.z) end
+  end
+  if pt then
+    table.insert(editor.points, pt)
+    editorSetMessage('Captured ' .. #editor.points)
+  else
+    editorSetMessage('Aim at the road and try again')
+  end
+end
+
 function script.draw3D()
   pcall(function()
     render.setDepthMode(render.DepthMode.ReadOnlyLessEqual)
@@ -1097,7 +1143,9 @@ function script.draw3D()
       end
     end
 
-    -- Editor capture preview: blue nodes connected as you drop them.
+    -- Editor: place any pending point (raycast needs to run here), then draw the
+    -- captured nodes as blue spheres connected in order.
+    editorFulfilCapture()
     for i, p in ipairs(editor.points) do
       render.debugSphere(p, 1, rgbm(0.2, 0.7, 1, 0.85))
       if i > 1 then render.debugLine(editor.points[i - 1], p, rgbm(0.2, 0.7, 1, 0.5)) end
@@ -1525,9 +1573,14 @@ local function editorTab()
   pcall(function() editor.name = ui.inputText('##rn', editor.name) or editor.name end)
   ui.separator()
 
-  if tintBtn('Capture point##ec', BTN_GO) then editorCapture(ac.getCar(0)); editorSetMessage('Captured ' .. #editor.points) end
+  if tintBtn('Capture point##ec', BTN_GO) then editorCapture() end
   ui.sameLine()
   if tintBtn('Clear##ecl', BTN_DANGER) then editorClear() end
+  -- where a captured point lands: free-cam aim (fly around) vs the car itself
+  if tintBtn((editor.freeCam and '[ FREE CAM ]' or 'FREE CAM') .. '##ecf', editor.freeCam and BTN_GO or BTN_MUTED) then editor.freeCam = true end
+  ui.sameLine()
+  if tintBtn((not editor.freeCam and '[ CAR ]' or 'CAR') .. '##ecc', not editor.freeCam and BTN_GO or BTN_MUTED) then editor.freeCam = false end
+  ui.sameLine(); ui.textColored(editor.freeCam and 'aim camera at road, Capture' or 'drops at the car', DIM)
   if editor.mode == 'route' then
     if tintBtn('Test drive##et', BTN_INFO) then
       if #editor.points >= 2 then
