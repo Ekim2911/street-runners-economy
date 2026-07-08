@@ -54,8 +54,8 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 
-  CREATE INDEX IF NOT EXISTS idx_hotlap_runs_route_car_player
-    ON hotlap_runs (route_id, car, player_id, time_ms ASC);
+  CREATE INDEX IF NOT EXISTS idx_hotlap_runs_route_player
+    ON hotlap_runs (route_id, player_id, time_ms ASC);
 
   CREATE TABLE IF NOT EXISTS missions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,11 +73,17 @@ try {
 } catch (e) {
   // already has the column
 }
-// Upgrade path for hotlap_runs created before per-car tracking.
+// Upgrade path for hotlap_runs created before per-car tracking. The car index
+// must be created AFTER this, since an existing DB has no `car` column yet.
 try {
   db.exec("ALTER TABLE hotlap_runs ADD COLUMN car TEXT NOT NULL DEFAULT ''");
 } catch (e) {
   // already has the column
+}
+try {
+  db.exec("CREATE INDEX IF NOT EXISTS idx_hotlap_runs_route_car ON hotlap_runs (route_id, car, player_id, time_ms ASC)");
+} catch (e) {
+  // index already exists
 }
 
 const getPlayer = db.prepare('SELECT id, name, title, balance FROM players WHERE id = ?');
