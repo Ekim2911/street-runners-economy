@@ -764,8 +764,11 @@ local COP = {
   staleAfter   = 4.0,    -- drop a wanted runner not heard from in this long
 }
 
-local cop = { onDuty = false, suspectIndex = -1, suspectDist = 1e9, stopSince = -1,
-  bustHeld = 0, msg = '', msgUntil = -1 }
+local cop = { onDuty = false, engaged = false, lockIndex = -1, suspectDist = 1e9,
+  nearestIndex = -1, nearestDist = 1e9, stopSince = -1, bustHeld = 0, msg = '', msgUntil = -1 }
+
+local function copSetMsg(t) cop.msg, cop.msgUntil = t, sessionTime + 4 end
+local function copEndPursuit() cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld = false, -1, -1, 0 end
 local copWanted = {}        -- carIndex -> { name, at, index } of wanted runners we've heard
 local wantedPingAt = -100
 
@@ -802,11 +805,22 @@ local function copBroadcastWanted()
   end
 end
 
--- Cop pursuit: auto-target the nearest live wanted runner; bust once they've
--- been stopped inside bustRange for stopTime seconds.
+-- Engage a suspect (from the cop app's Initiate Pursuit button).
+local function copInitiatePursuit(index)
+  if index and index >= 0 then
+    cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld = true, index, -1, 0
+    copSetMsg('PURSUIT INITIATED')
+  end
+end
+
+-- Cop update: track the nearest wanted runner (for the Initiate button), and —
+-- only while a pursuit is engaged — bust the locked suspect once they've been
+-- stopped inside bustRange for stopTime seconds.
 local function updateCop(car, dt)
   cop.onDuty = copEligible()
-  if not cop.onDuty then cop.suspectIndex, cop.stopSince, cop.bustHeld = -1, -1, 0; return end
+  if not cop.onDuty then copEndPursuit(); return end
+
+  -- prune stale wanted, and find the nearest for the Initiate button
   local bestI, bestD = -1, 1e9
   for idx, w in pairs(copWanted) do
     if sessionTime - w.at > COP.staleAfter then
@@ -820,22 +834,27 @@ local function updateCop(car, dt)
       end
     end
   end
-  cop.suspectIndex, cop.suspectDist = bestI, bestD
-  if bestI >= 0 and bestD <= COP.bustRange then
-    local o = ac.getCar(bestI)
-    if o and (o.speedKmh or 0) < COP.stopSpeed then
-      if cop.stopSince < 0 then cop.stopSince = sessionTime end
-      cop.bustHeld = sessionTime - cop.stopSince
-      if cop.bustHeld >= COP.stopTime then
-        local nm = (copWanted[bestI] and copWanted[bestI].name) or 'suspect'
-        pcall(function() copEvent{ kind = 2, target = o.sessionID, name = storage.playerName } end)
-        economyEarn(COP.bounty, 'bust:' .. nm)
-        cop.msg = string.format('BUSTED %s  +%s', nm, money(COP.bounty))
-        cop.msgUntil = sessionTime + 5
-        copWanted[bestI], cop.stopSince, cop.bustHeld = nil, -1, 0
-      end
-    else
-      cop.stopSince, cop.bustHeld = -1, 0
+  cop.nearestIndex, cop.nearestDist = bestI, bestD
+
+  -- bust logic only runs against the ENGAGED, locked suspect
+  if not cop.engaged or cop.lockIndex < 0 then cop.stopSince, cop.bustHeld = -1, 0; return end
+  local w, o = copWanted[cop.lockIndex], ac.getCar(cop.lockIndex)
+  if not w or not o or not o.position then
+    copEndPursuit(); copSetMsg('Suspect lost'); return
+  end
+  local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
+  cop.suspectDist = math.sqrt(dx * dx + dz * dz)
+  if cop.suspectDist <= COP.bustRange and (o.speedKmh or 0) < COP.stopSpeed then
+    if cop.stopSince < 0 then cop.stopSince = sessionTime end
+    cop.bustHeld = sessionTime - cop.stopSince
+    if cop.bustHeld >= COP.stopTime then
+      local nm = w.name or 'suspect'
+      pcall(function() copEvent{ kind = 2, target = o.sessionID, name = storage.playerName } end)
+      economyEarn(COP.bounty, 'bust:' .. nm)
+      copSetMsg(string.format('BUSTED %s  +%s', nm, money(COP.bounty)))
+      cop.msgUntil = sessionTime + 5
+      copWanted[cop.lockIndex] = nil
+      copEndPursuit()
     end
   else
     cop.stopSince, cop.bustHeld = -1, 0
@@ -1736,27 +1755,6 @@ local function drawMainHUD()
     ui.textColored(delivery.msg, WHITE)
   end
 
-  -- Cop pursuit HUD (when on duty in a cop car)
-  if cop.onDuty then
-    ui.separator()
-    ui.textColored('» ON DUTY', REDC)
-    local nw = 0; for _ in pairs(copWanted) do nw = nw + 1 end
-    if cop.suspectIndex >= 0 and cop.suspectDist < 1e8 then
-      local nm = (copWanted[cop.suspectIndex] and copWanted[cop.suspectIndex].name) or 'suspect'
-      ui.textColored(string.format('SUSPECT %s  %dm', nm, math.floor(cop.suspectDist)), GOLD)
-      if cop.stopSince >= 0 then
-        ui.textColored('BUSTING ', REDC); ui.sameLine()
-        ui.textColored(meter(math.min(1, cop.bustHeld / COP.stopTime), 12), REDC); ui.sameLine()
-        ui.textColored(string.format('%.0fs', math.max(0, COP.stopTime - cop.bustHeld)), REDC)
-      else
-        ui.textColored('get in range · wait for them to stop', DIM)
-      end
-    else
-      ui.textColored(nw > 0 and (nw .. ' wanted out there') or 'No wanted runners', DIM)
-    end
-  end
-  if cop.msg ~= '' and sessionTime < cop.msgUntil then ui.textColored(cop.msg, NEON) end
-
   ui.separator()
   ui.textColored('Ctrl+6 app · drag move', DIM)
   ui.textColored(string.format('Ctrl+8/9 resize (%.1fx)%s', uiScale, scaleWorks and '' or ' [box only]'), DIM)
@@ -2010,36 +2008,49 @@ local function lapsTab()
 end
 
 -- COP tab: on-duty status + the live wanted list. Cop = police car + level.
-local function copTab()
-  ui.textColored('» POLICE', REDC)
-  ui.separator()
-  if not isCopCar(currentCarId()) then
-    ui.textColored('Drive a police car to go on duty.', DIM)
-    ui.textColored('(car id must contain "acpursuit" or "police")', DIM)
-    return
-  end
-  if playerLevel() < CONFIG.copLevel then
-    ui.textColored(string.format('Reach LVL %d to go on duty — you are LVL %d.', CONFIG.copLevel, playerLevel()), GOLD)
-    return
-  end
-  ui.textColored('ON DUTY — hunt wanted runners', NEON)
-  ui.textColored(string.format('Bust: keep them stopped %ds within %dm  ·  bounty %s',
-    COP.stopTime, COP.bustRange, money(COP.bounty)), DIM)
-  ui.separator()
-  ui.textColored('» WANTED NOW', REDC)
-  local me, any = ac.getCar(0), false
-  for _, w in pairs(copWanted) do
-    if sessionTime - w.at < COP.staleAfter then
-      any = true
-      local o, dist = ac.getCar(w.index), 0
-      if o and o.position and me then
-        dist = math.floor(math.sqrt((o.position.x - me.position.x) ^ 2 + (o.position.z - me.position.z) ^ 2))
+-- Body of the standalone POLICE window (only drawn when on duty). Shows wanted
+-- runners with an Initiate Pursuit button, or the live pursuit + bust progress.
+local function copAppBody()
+  ui.textColored('ACP POLICE · ON DUTY', REDC)
+  accentSep(REDC)
+  if cop.engaged and cop.lockIndex >= 0 then
+    local w = copWanted[cop.lockIndex]
+    ui.textColored('PURSUING  ' .. ((w and w.name) or 'suspect'), GOLD)
+    ui.textColored(string.format('%dm away', math.floor(cop.suspectDist or 0)), WHITE)
+    if cop.stopSince >= 0 then
+      ui.textColored('BUSTING ', REDC); ui.sameLine()
+      ui.textColored(meter(math.min(1, cop.bustHeld / COP.stopTime), 12), REDC); ui.sameLine()
+      ui.textColored(string.format('%.0fs', math.max(0, COP.stopTime - cop.bustHeld)), REDC)
+    else
+      ui.textColored('Corner them — wait for them to STOP', DIM)
+    end
+    if tintBtn('END PURSUIT##cend', BTN_DANGER) then copEndPursuit(); copSetMsg('Pursuit ended') end
+  else
+    ui.textColored('» WANTED', REDC)
+    local me, any = ac.getCar(0), false
+    for _, w in pairs(copWanted) do
+      if sessionTime - w.at < COP.staleAfter then
+        any = true
+        local o, dist = ac.getCar(w.index), 0
+        if o and o.position and me then
+          dist = math.floor(math.sqrt((o.position.x - me.position.x) ^ 2 + (o.position.z - me.position.z) ^ 2))
+        end
+        ui.textColored(w.name or '???', WHITE); ui.sameLine(140)
+        ui.textColored(dist .. 'm', GOLD); ui.sameLine(200)
+        if tintBtn('Pursue##p' .. w.index, BTN_GO) then copInitiatePursuit(w.index) end
       end
-      ui.textColored(w.name or '???', WHITE); ui.sameLine(240)
-      ui.textColored(dist .. 'm', GOLD)
+    end
+    if not any then ui.textColored('   No wanted runners right now.', DIM) end
+    if cop.nearestIndex and cop.nearestIndex >= 0 then
+      ui.separator()
+      if tintBtn(string.format('INITIATE PURSUIT  (nearest %dm)##cinit', math.floor(cop.nearestDist)), BTN_GO) then
+        copInitiatePursuit(cop.nearestIndex)
+      end
     end
   end
-  if not any then ui.textColored('   No wanted runners right now.', DIM) end
+  if cop.msg ~= '' and sessionTime < cop.msgUntil then ui.textColored(cop.msg, NEON) end
+  ui.separator()
+  ui.textColored(string.format('bust: stop them %ds within %dm · bounty %s', COP.stopTime, COP.bustRange, money(COP.bounty)), DIM)
 end
 
 local function editorTab()
@@ -2131,7 +2142,6 @@ local function drawApp()
         ui.tabItem('SHOP', shopTab)
         ui.tabItem('LEADERBOARD', leaderboardTab)
         ui.tabItem('LAPS', lapsTab)
-        ui.tabItem('COP', copTab)
         if CONFIG.showEditor then ui.tabItem('EDITOR', editorTab) end
       end)
     end)
@@ -2143,7 +2153,15 @@ local function drawApp()
   end)
 end
 
+-- Standalone POLICE window — only appears when you're a cop (police car + level),
+-- separate from the runner app. Auto-shows on duty; no need to open the main app.
+local function drawCopApp()
+  if not copEligible() then return end
+  panel('ACP POLICE', vec2(24, 70), vec2(300, 240), copAppBody)
+end
+
 function script.drawUI()
   pcall(drawMainHUD)
   pcall(drawApp)
+  pcall(drawCopApp)
 end
