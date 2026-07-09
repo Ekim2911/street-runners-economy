@@ -758,6 +758,7 @@ end
 local COP = {
   bounty       = 5000,   -- cash a cop earns per bust
   bustRange    = 30,     -- m: suspect must be within this to be bustable
+  radarRange   = 400,    -- m: show nearby players on the cop radar within this
   stopSpeed    = 6,      -- km/h below which the suspect counts as stopped
   stopTime     = 5,      -- seconds stopped-in-range before the bust lands
   pingInterval = 1.0,    -- how often a wanted runner broadcasts itself
@@ -820,26 +821,37 @@ local function updateCop(car, dt)
   cop.onDuty = copEligible()
   if not cop.onDuty then copEndPursuit(); return end
 
-  -- prune stale wanted, and find the nearest for the Initiate button
-  local bestI, bestD = -1, 1e9
+  -- prune stale wanted
   for idx, w in pairs(copWanted) do
-    if sessionTime - w.at > COP.staleAfter then
-      copWanted[idx] = nil
-    else
-      local o = ac.getCar(w.index)
-      if o and o.position then
+    if sessionTime - w.at > COP.staleAfter then copWanted[idx] = nil end
+  end
+  -- radar: every nearby connected car (players), wanted ones flagged, nearest first
+  local nearby = {}
+  pcall(function()
+    local n = 64
+    local sim = ac.getSim and ac.getSim(); if sim and sim.carsCount then n = sim.carsCount end
+    for i = 1, n - 1 do
+      local o = ac.getCar(i)
+      if o and o.isConnected and o.position then
         local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
         local d = math.sqrt(dx * dx + dz * dz)
-        if d < bestD then bestD, bestI = d, w.index end
+        if d <= COP.radarRange then
+          local w = copWanted[i]
+          nearby[#nearby + 1] = { index = i, dist = d, wanted = (w ~= nil), name = ac.getDriverName(i) or '???' }
+        end
       end
     end
-  end
-  cop.nearestIndex, cop.nearestDist = bestI, bestD
+    table.sort(nearby, function(a, b)
+      if a.wanted ~= b.wanted then return a.wanted end
+      return a.dist < b.dist
+    end)
+  end)
+  cop.nearby = nearby
 
-  -- bust logic only runs against the ENGAGED, locked suspect
+  -- bust logic only runs against the ENGAGED, locked suspect (any car — wanted or not)
   if not cop.engaged or cop.lockIndex < 0 then cop.stopSince, cop.bustHeld = -1, 0; return end
-  local w, o = copWanted[cop.lockIndex], ac.getCar(cop.lockIndex)
-  if not w or not o or not o.position then
+  local o = ac.getCar(cop.lockIndex)
+  if not o or not o.position or (o.isConnected == false) then
     copEndPursuit(); copSetMsg('Suspect lost'); return
   end
   local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
@@ -848,12 +860,17 @@ local function updateCop(car, dt)
     if cop.stopSince < 0 then cop.stopSince = sessionTime end
     cop.bustHeld = sessionTime - cop.stopSince
     if cop.bustHeld >= COP.stopTime then
-      local nm = w.name or 'suspect'
+      local wentry = copWanted[cop.lockIndex]
+      local nm = (wentry and wentry.name) or ac.getDriverName(cop.lockIndex) or 'suspect'
       pcall(function() copEvent{ kind = 2, target = o.sessionID, name = storage.playerName } end)
-      economyEarn(COP.bounty, 'bust:' .. nm)
-      copSetMsg(string.format('BUSTED %s  +%s', nm, money(COP.bounty)))
+      if wentry then                                    -- bounty only for actually-wanted runners
+        economyEarn(COP.bounty, 'bust:' .. nm)
+        copSetMsg(string.format('BUSTED %s  +%s', nm, money(COP.bounty)))
+        copWanted[cop.lockIndex] = nil
+      else
+        copSetMsg('Arrested ' .. nm)
+      end
       cop.msgUntil = sessionTime + 5
-      copWanted[cop.lockIndex] = nil
       copEndPursuit()
     end
   else
@@ -2026,26 +2043,22 @@ local function copAppBody()
     end
     if tintBtn('END PURSUIT##cend', BTN_DANGER) then copEndPursuit(); copSetMsg('Pursuit ended') end
   else
-    ui.textColored('» WANTED', REDC)
-    local me, any = ac.getCar(0), false
-    for _, w in pairs(copWanted) do
-      if sessionTime - w.at < COP.staleAfter then
-        any = true
-        local o, dist = ac.getCar(w.index), 0
-        if o and o.position and me then
-          dist = math.floor(math.sqrt((o.position.x - me.position.x) ^ 2 + (o.position.z - me.position.z) ^ 2))
-        end
-        ui.textColored(w.name or '???', WHITE); ui.sameLine(140)
-        ui.textColored(dist .. 'm', GOLD); ui.sameLine(200)
-        if tintBtn('Pursue##p' .. w.index, BTN_GO) then copInitiatePursuit(w.index) end
+    ui.textColored('» RADAR  (wanted in red)', REDC)
+    local list = cop.nearby or {}
+    if #list == 0 then
+      ui.textColored('   No cars nearby.', DIM)
+    else
+      for _, e in ipairs(list) do
+        ui.textColored(e.name, e.wanted and REDC or WHITE); ui.sameLine(150)
+        ui.textColored(math.floor(e.dist) .. 'm', GOLD); ui.sameLine(210)
+        if e.wanted then ui.textColored('WANTED', REDC); ui.sameLine(275) end
+        if tintBtn('Pursue##rp' .. e.index, e.wanted and BTN_DANGER or BTN_GO) then copInitiatePursuit(e.index) end
       end
     end
-    if not any then ui.textColored('   No wanted runners right now.', DIM) end
-    if cop.nearestIndex and cop.nearestIndex >= 0 then
+    if isDev() then
       ui.separator()
-      if tintBtn(string.format('INITIATE PURSUIT  (nearest %dm)##cinit', math.floor(cop.nearestDist)), BTN_GO) then
-        copInitiatePursuit(cop.nearestIndex)
-      end
+      if tintBtn('TEST PURSUIT (self)##ctest', BTN_MUTED) then copInitiatePursuit(0) end
+      ui.sameLine(); ui.textColored('dev: stop 5s to bust yourself', DIM)
     end
   end
   if cop.msg ~= '' and sessionTime < cop.msgUntil then ui.textColored(cop.msg, NEON) end
