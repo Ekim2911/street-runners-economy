@@ -790,9 +790,8 @@ local function copSetMsg(t) cop.msg, cop.msgUntil = t, sessionTime + 4 end
 local function copEndPursuit() cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld, cop.alertAt = false, -1, -1, 0, nil end
 local copWanted = {}        -- carIndex -> { name, at, index } of wanted runners we've heard
 local wantedPingAt = -100
--- Set on the SUSPECT's client when a cop pings a pursuit / busts them.
-local chasedBy, chasedUntil = '', -1
-local bustedBy, bustedUntil = '', -1
+-- Set on the SUSPECT's client when a cop pings a pursuit / busts them / gives up.
+local alert = { chasedBy = '', chasedUntil = -1, bustedBy = '', bustedUntil = -1, lostUntil = -1 }
 
 local function mySessionId()
   local id = -1
@@ -816,24 +815,29 @@ pcall(function()
     elseif data.kind == 2 then
       if data.target == mySessionId() then
         local by = (data.name ~= '' and data.name or 'Police')
-        bustedBy, bustedUntil, chasedUntil = by, sessionTime + 7, -1
+        alert.bustedBy, alert.bustedUntil, alert.chasedUntil = by, sessionTime + 7, -1
         if delivery.active then deliveryFail('BUSTED by ' .. by .. ' — cargo lost') end
       end
     elseif data.kind == 3 then
       if data.target == mySessionId() then
-        chasedBy, chasedUntil = (data.name ~= '' and data.name or 'Police'), sessionTime + 5
+        alert.chasedBy, alert.chasedUntil = (data.name ~= '' and data.name or 'Police'), sessionTime + 5
+      end
+    elseif data.kind == 4 then
+      if data.target == mySessionId() then
+        alert.lostUntil, alert.chasedUntil = sessionTime + 5, -1     -- you shook the cops
       end
     end
   end)
 end)
 
--- Send the "you're being chased" alert to a suspect's car (by index).
-local function copAlertSuspect(index)
+-- Send a message of `kind` to a suspect's car (by index).
+local function copSendTo(index, kind)
   pcall(function()
     local o = ac.getCar(index)
-    if o and copEvent then copEvent{ kind = 3, target = o.sessionID, name = storage.playerName } end
+    if o and copEvent then copEvent{ kind = kind, target = o.sessionID, name = storage.playerName } end
   end)
 end
+local function copAlertSuspect(index) copSendTo(index, 3) end    -- "you're being chased"
 
 local function copBroadcastWanted()
   if copEvent and sessionTime - wantedPingAt > COP.pingInterval then
@@ -903,7 +907,7 @@ local function updateCop(car, dt)
   if not cop.engaged or cop.lockIndex < 0 then cop.stopSince, cop.bustHeld = -1, 0; return end
   local o = ac.getCar(cop.lockIndex)
   if not o or not o.position or (o.isConnected == false) then
-    copEndPursuit(); copSetMsg('Suspect lost'); return
+    copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('Suspect lost'); return
   end
   local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
   cop.suspectDist = math.sqrt(dx * dx + dz * dz)
@@ -2116,7 +2120,7 @@ local function copAppBody()
     else
       ui.textColored('Corner them — wait for them to STOP', DIM)
     end
-    if tintBtn('END PURSUIT##cend', BTN_DANGER) then copEndPursuit(); copSetMsg('Pursuit ended') end
+    if tintBtn('END PURSUIT##cend', BTN_DANGER) then copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('Pursuit ended') end
   else
     ui.textColored('» RADAR  (wanted in red)', REDC)
     local list = cop.nearby or {}
@@ -2251,13 +2255,22 @@ end
 -- Big red banner across the top of the screen: shown to a player being chased
 -- or just busted. Uses the sized dwrite text API (proven in the old police app).
 local function drawBanner()
-  local busted = sessionTime < bustedUntil
-  local chased = sessionTime < chasedUntil
-  if not (busted or chased) then return end
+  local busted = sessionTime < alert.bustedUntil
+  local lost   = sessionTime < alert.lostUntil
+  local chased = sessionTime < alert.chasedUntil
+  if not (busted or lost or chased) then return end
   if math.floor(sessionTime * 3) % 2 == 1 then return end   -- blink
-  local text = busted
-    and ('*** BUSTED ***   ARRESTED BY ' .. (bustedBy ~= '' and bustedBy or 'POLICE'):upper())
-    or  ((chasedBy ~= '' and chasedBy or 'POLICE'):upper() .. '  IS CHASING YOU')
+  local text, bg
+  if busted then
+    text = '*** BUSTED ***   ARRESTED BY ' .. (alert.bustedBy ~= '' and alert.bustedBy or 'POLICE'):upper()
+    bg = rgbm(0.5, 0, 0, 0.6)
+  elseif lost then
+    text = 'YOU LOST THE COPS'
+    bg = rgbm(0, 0.4, 0.1, 0.6)                              -- green = you got away
+  else
+    text = (alert.chasedBy ~= '' and alert.chasedBy or 'POLICE'):upper() .. '  IS CHASING YOU'
+    bg = rgbm(0.5, 0, 0, 0.6)
+  end
   pcall(function()
     local sw = ui.windowSize().x
     ui.beginTransparentWindow('sr_banner', vec2(0, 0), vec2(sw, 150), true)
@@ -2266,8 +2279,8 @@ local function drawBanner()
     local ts = ui.measureDWriteText(text, fs)
     local ox = math.floor((sw - ts.x) / 2)
     local oy = 72
-    ui.drawRectFilled(vec2(ox - 16, oy - 8), vec2(ox + ts.x + 16, oy + ts.y + 8), rgbm(0.5, 0, 0, 0.6))
-    ui.dwriteDrawText(text, fs, vec2(ox, oy), rgbm(1, 0.92, 0.92, 1))
+    ui.drawRectFilled(vec2(ox - 16, oy - 8), vec2(ox + ts.x + 16, oy + ts.y + 8), bg)
+    ui.dwriteDrawText(text, fs, vec2(ox, oy), rgbm(1, 0.96, 0.96, 1))
     pcall(function() ui.popDWriteFont() end)
     ui.endTransparentWindow()
   end)
