@@ -794,7 +794,7 @@ local copWanted = {}        -- carIndex -> { name, at, index } of wanted runners
 local wantedPingAt = -100
 -- Set on the SUSPECT's client when a cop pings a pursuit / busts them / gives up.
 local alert = { chasedBy = '', chasedUntil = -1, bustedBy = '', bustedUntil = -1, lostUntil = -1,
-  copLostUntil = -1 }
+  copLostUntil = -1, copWinUntil = -1 }
 
 local function mySessionId()
   local id = -1
@@ -833,14 +833,22 @@ pcall(function()
   end)
 end)
 
--- Send a message of `kind` to a suspect's car (by index).
+-- Queue a message of `kind` to a suspect (by car index), resent a few times so
+-- a dropped packet doesn't lose the notification. Processed in updateCop.
 local function copSendTo(index, kind)
   pcall(function()
     local o = ac.getCar(index)
-    if o and copEvent then copEvent{ kind = kind, target = o.sessionID, name = storage.playerName } end
+    if o and o.sessionID ~= nil then
+      cop.outbox = cop.outbox or {}
+      cop.outbox[#cop.outbox + 1] = { kind = kind, target = o.sessionID, left = 3, nextAt = sessionTime }
+    end
   end)
 end
 local function copAlertSuspect(index) copSendTo(index, 3) end    -- "you're being chased"
+
+-- Reliable in-game chat notification (server-relayed, seen by everyone). Used as
+-- a backstop for the pursuit events in case the OnlineEvent banner doesn't land.
+local function copChat(text) pcall(function() ac.sendChatMessage('[MPD] ' .. text) end) end
 
 local function copBroadcastWanted()
   if copEvent and sessionTime - wantedPingAt > COP.pingInterval then
@@ -871,6 +879,7 @@ local function copInitiatePursuit(index)
     cop.selfLast, cop.suspLast = nil, nil                -- teleport tracking baseline
     copSetMsg('PURSUIT INITIATED')
     copAlertSuspect(index)                              -- tell them they're being chased
+    copChat(storage.playerName .. ' is pursuing ' .. (ac.getDriverName(index) or 'a suspect'))
   end
 end
 
@@ -878,6 +887,20 @@ end
 -- only while a pursuit is engaged — bust the locked suspect once they've been
 -- stopped inside bustRange for stopTime seconds.
 local function updateCop(car, dt)
+  -- resend queued cop->suspect events a few times (runs even off-duty so a
+  -- just-ended pursuit finishes delivering its notification)
+  if cop.outbox and #cop.outbox > 0 then
+    local keep = {}
+    for _, m in ipairs(cop.outbox) do
+      if sessionTime >= m.nextAt then
+        pcall(function() if copEvent then copEvent{ kind = m.kind, target = m.target, name = storage.playerName } end end)
+        m.left, m.nextAt = m.left - 1, sessionTime + 0.25
+      end
+      if m.left > 0 then keep[#keep + 1] = m end
+    end
+    cop.outbox = keep
+  end
+
   cop.onDuty = copEligible()
   if not cop.onDuty then copEndPursuit(); return end
 
@@ -910,10 +933,30 @@ local function updateCop(car, dt)
   -- bust logic only runs against the ENGAGED, locked suspect (any car — wanted or not)
   if not cop.engaged or cop.lockIndex < 0 then cop.stopSince, cop.bustHeld = -1, 0; return end
   local o = ac.getCar(cop.lockIndex)
-  if not o or not o.position or (o.isConnected == false) then
-    copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('Suspect lost')
-    alert.copLostUntil = sessionTime + 4; return
+  local suspectName = (copWanted[cop.lockIndex] and copWanted[cop.lockIndex].name)
+    or ac.getDriverName(cop.lockIndex) or 'the suspect'
+
+  -- shared outcomes (event to suspect + cop banner + reliable chat line)
+  local function doBust(fled)
+    local wentry = copWanted[cop.lockIndex]
+    local nm = (wentry and wentry.name) or ac.getDriverName(cop.lockIndex) or 'suspect'
+    copSendTo(cop.lockIndex, 2)
+    economyReportArrest()
+    local reward = ''
+    if wentry then economyEarn(COP.bounty, 'bust:' .. nm); copWanted[cop.lockIndex] = nil; reward = '  +' .. money(COP.bounty) end
+    copSetMsg((fled and 'Suspect fled — BUSTED ' or 'BUSTED ') .. nm .. reward); cop.msgUntil = sessionTime + 5
+    alert.copWinUntil = sessionTime + 4
+    copChat(storage.playerName .. ' busted ' .. nm .. (fled and ' (fled)' or ''))
+    copEndPursuit()
   end
+  local function doEscape(reasonMsg)
+    copSendTo(cop.lockIndex, 4)
+    copSetMsg(reasonMsg); alert.copLostUntil = sessionTime + 4
+    copChat(suspectName .. ' evaded ' .. storage.playerName)
+    copEndPursuit()
+  end
+
+  if not o or not o.position or (o.isConnected == false) then doEscape('Suspect lost'); return end
   local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
   cop.suspectDist = math.sqrt(dx * dx + dz * dz)
 
@@ -923,45 +966,19 @@ local function updateCop(car, dt)
   local qj = cop.suspLast and math.sqrt((o.position.x - cop.suspLast.x) ^ 2 + (o.position.z - cop.suspLast.z) ^ 2) or 0
   cop.selfLast = { x = car.position.x, z = car.position.z }
   cop.suspLast = { x = o.position.x, z = o.position.z }
-  if sj > COP.teleportJump then                          -- cop teleported away → escape
-    copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('You left — suspect escaped')
-    alert.copLostUntil = sessionTime + 4; return
-  end
-  if qj > COP.teleportJump then                          -- suspect pitted/TP'd → bust
-    local wentry = copWanted[cop.lockIndex]
-    local nm = (wentry and wentry.name) or ac.getDriverName(cop.lockIndex) or 'suspect'
-    pcall(function() copEvent{ kind = 2, target = o.sessionID, name = storage.playerName } end)
-    economyReportArrest()
-    if wentry then economyEarn(COP.bounty, 'bust:' .. nm); copWanted[cop.lockIndex] = nil end
-    copSetMsg('Suspect fled — BUSTED ' .. nm); cop.msgUntil = sessionTime + 5
-    copEndPursuit(); return
-  end
+  if sj > COP.teleportJump then doEscape('You left — suspect escaped'); return end
+  if qj > COP.teleportJump then doBust(true); return end
 
   -- escape: suspect got more than escapeRange away
-  if cop.suspectDist > COP.escapeRange then
-    copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('Suspect escaped')
-    alert.copLostUntil = sessionTime + 4; return
-  end
+  if cop.suspectDist > COP.escapeRange then doEscape('Suspect escaped'); return end
+
   -- keep reminding the suspect they're being chased (banner refreshes each ping)
   if sessionTime - (cop.alertAt or 0) > 2 then cop.alertAt = sessionTime; copAlertSuspect(cop.lockIndex) end
+
   if cop.suspectDist <= COP.bustRange and (o.speedKmh or 0) < COP.stopSpeed then
     if cop.stopSince < 0 then cop.stopSince = sessionTime end
     cop.bustHeld = sessionTime - cop.stopSince
-    if cop.bustHeld >= COP.stopTime then
-      local wentry = copWanted[cop.lockIndex]
-      local nm = (wentry and wentry.name) or ac.getDriverName(cop.lockIndex) or 'suspect'
-      pcall(function() copEvent{ kind = 2, target = o.sessionID, name = storage.playerName } end)
-      economyReportArrest()                             -- counts toward the arrests leaderboard
-      if wentry then                                    -- bounty only for actually-wanted runners
-        economyEarn(COP.bounty, 'bust:' .. nm)
-        copSetMsg(string.format('BUSTED %s  +%s', nm, money(COP.bounty)))
-        copWanted[cop.lockIndex] = nil
-      else
-        copSetMsg('Arrested ' .. nm)
-      end
-      cop.msgUntil = sessionTime + 5
-      copEndPursuit()
-    end
+    if cop.bustHeld >= COP.stopTime then doBust(false) end
   else
     cop.stopSince, cop.bustHeld = -1, 0
   end
@@ -2151,7 +2168,10 @@ local function copAppBody()
     else
       ui.textColored('Corner them — wait for them to STOP', DIM)
     end
-    if tintBtn('END PURSUIT##cend', BTN_DANGER) then copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('Pursuit ended') end
+    if tintBtn('END PURSUIT##cend', BTN_DANGER) then
+      copSendTo(cop.lockIndex, 4); copChat(storage.playerName .. ' called off the pursuit')
+      copEndPursuit(); copSetMsg('Pursuit ended')
+    end
   else
     ui.textColored('» RADAR  (wanted in red)', REDC)
     local list = cop.nearby or {}
@@ -2287,15 +2307,19 @@ end
 -- or just busted. Uses the sized dwrite text API (proven in the old police app).
 local function drawBanner()
   local busted  = sessionTime < alert.bustedUntil
+  local copWin  = sessionTime < alert.copWinUntil
   local copLost = sessionTime < alert.copLostUntil
   local lost    = sessionTime < alert.lostUntil
   local chased  = sessionTime < alert.chasedUntil
-  if not (busted or copLost or lost or chased) then return end
+  if not (busted or copWin or copLost or lost or chased) then return end
   if math.floor(sessionTime * 3) % 2 == 1 then return end   -- blink
   local text, bg
   if busted then
     text = '*** BUSTED ***   ARRESTED BY ' .. (alert.bustedBy ~= '' and alert.bustedBy or 'POLICE'):upper()
     bg = rgbm(0.5, 0, 0, 0.6)
+  elseif copWin then
+    text = 'SUSPECT BUSTED'
+    bg = rgbm(0, 0.4, 0.1, 0.6)                              -- green = you got them
   elseif copLost then
     text = "YOU'VE LOST THE SUSPECT"
     bg = rgbm(0.5, 0.25, 0, 0.6)                             -- amber = cop lost them
