@@ -1833,6 +1833,7 @@ local function drawMainHUD()
   ui.textColored('BALANCE  ', DIM); ui.sameLine(); ui.textColored(money(storage.cash), WHITE)
   ui.textColored(string.format('LVL %d', playerLevel()), CYAN); ui.sameLine()
   ui.textColored(meter(levelProgress(), 8), CYAN)
+  if isDev() then ui.textColored(string.format('[dev] net rx %d', cop.rx or 0), DIM) end
   if isCopCar(currentCarId()) then
     if playerLevel() >= CONFIG.copLevel then
       ui.textColored('COP CAR · ON DUTY', NEON)
