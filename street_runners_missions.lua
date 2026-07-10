@@ -779,7 +779,7 @@ local COP = {
   radarRange   = 400,    -- m: show nearby players on the cop radar within this
   escapeRange  = 400,    -- m: if an engaged suspect gets this far, they escape
   teleportJump = 150,    -- m: a one-frame position jump this big = a pit/TP teleport
-  stopSpeed    = 12,     -- km/h below which the suspect counts as stopped
+  stopSpeed    = 12,     -- km/h below which the suspect counts as stopped (derived from movement)
   stopTime     = 5,      -- seconds stopped-in-range before the bust lands
   pingInterval = 1.0,    -- how often a wanted runner broadcasts itself
   staleAfter   = 4.0,    -- drop a wanted runner not heard from in this long
@@ -869,7 +869,7 @@ local function copInitiatePursuit(index)
   if index and index >= 0 then
     cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld = true, index, -1, 0
     cop.alertAt = sessionTime
-    cop.selfLast, cop.suspLast = nil, nil                -- teleport tracking baseline
+    cop.selfLast, cop.suspLast, cop.suspHist = nil, nil, nil   -- teleport + speed tracking baseline
     copSetMsg('PURSUIT INITIATED')
     copAlertSuspect(index)                              -- tell them they're being chased
     copChat(storage.playerName .. ' is pursuing ' .. (ac.getDriverName(index) or 'a suspect'))
@@ -965,10 +965,21 @@ local function updateCop(car, dt)
   -- escape: suspect got more than escapeRange away
   if cop.suspectDist > COP.escapeRange then doEscape('Suspect escaped'); return end
 
+  -- suspect speed derived from movement over a ~1s window — a remote car's
+  -- reported speedKmh reads stale/nonzero even when it's parked.
+  cop.suspHist = cop.suspHist or {}
+  cop.suspHist[#cop.suspHist + 1] = { t = sessionTime, x = o.position.x, z = o.position.z }
+  while #cop.suspHist > 1 and sessionTime - cop.suspHist[1].t > 1.0 do table.remove(cop.suspHist, 1) end
+  local h0 = cop.suspHist[1]
+  local elapsed = sessionTime - h0.t
+  cop.suspSpeed = elapsed > 0.25
+    and (math.sqrt((o.position.x - h0.x) ^ 2 + (o.position.z - h0.z) ^ 2) / elapsed) * 3.6
+    or 999
+
   -- keep reminding the suspect they're being chased (banner refreshes each ping)
   if sessionTime - (cop.alertAt or 0) > 2 then cop.alertAt = sessionTime; copAlertSuspect(cop.lockIndex) end
 
-  if cop.suspectDist <= COP.bustRange and (o.speedKmh or 0) < COP.stopSpeed then
+  if cop.suspectDist <= COP.bustRange and cop.suspSpeed < COP.stopSpeed then
     if cop.stopSince < 0 then cop.stopSince = sessionTime end
     cop.bustHeld = sessionTime - cop.stopSince
     if cop.bustHeld >= COP.stopTime then doBust(false) end
@@ -2151,8 +2162,7 @@ local function copAppBody()
   ui.textColored('MPD POLICE · ON DUTY', REDC)
   accentSep(REDC)
   if cop.engaged and cop.lockIndex >= 0 then
-    local so = ac.getCar(cop.lockIndex)
-    local sspd = (so and so.speedKmh) or 0
+    local sspd = math.min(cop.suspSpeed or 0, 999)
     local sdist = cop.suspectDist or 0
     ui.textColored('PURSUING  ' .. (ac.getDriverName(cop.lockIndex) or 'suspect'), GOLD)
     ui.textColored(string.format('%dm away  ·  %d km/h', math.floor(sdist), math.floor(sspd)), WHITE)
