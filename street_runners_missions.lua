@@ -790,8 +790,9 @@ local function copSetMsg(t) cop.msg, cop.msgUntil = t, sessionTime + 4 end
 local function copEndPursuit() cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld, cop.alertAt = false, -1, -1, 0, nil end
 local copWanted = {}        -- carIndex -> { name, at, index } of wanted runners we've heard
 local wantedPingAt = -100
--- Set on the SUSPECT's client when a cop pings a pursuit at them.
+-- Set on the SUSPECT's client when a cop pings a pursuit / busts them.
 local chasedBy, chasedUntil = '', -1
+local bustedBy, bustedUntil = '', -1
 
 local function mySessionId()
   local id = -1
@@ -813,8 +814,10 @@ pcall(function()
     if data.kind == 1 then
       copWanted[sender.index] = { name = data.name, at = sessionTime, index = sender.index }
     elseif data.kind == 2 then
-      if data.target == mySessionId() and delivery.active then
-        deliveryFail('BUSTED by ' .. (data.name ~= '' and data.name or 'police') .. ' — cargo lost')
+      if data.target == mySessionId() then
+        local by = (data.name ~= '' and data.name or 'Police')
+        bustedBy, bustedUntil, chasedUntil = by, sessionTime + 7, -1
+        if delivery.active then deliveryFail('BUSTED by ' .. by .. ' — cargo lost') end
       end
     elseif data.kind == 3 then
       if data.target == mySessionId() then
@@ -1761,8 +1764,15 @@ end
 -- Compact always-on driving HUD (cash + live run/drift state).
 local function drawMainHUD()
   panel('STREET RUNNERS', vec2(24, ui.windowSize().y - 220), vec2(280, 188), function()
-  -- police pursuit alert (blinks) — shown to whoever a cop is chasing
-  if sessionTime < chasedUntil then
+  -- busted banner takes priority; otherwise the pursuit alert. Both blink.
+  if sessionTime < bustedUntil then
+    if math.floor(sessionTime * 3) % 2 == 0 then
+      ui.textColored('*** BUSTED ***', REDC)
+    else
+      ui.textColored('ARRESTED BY ' .. (bustedBy ~= '' and bustedBy or 'Police'), REDC)
+    end
+    ui.separator()
+  elseif sessionTime < chasedUntil then
     if math.floor(sessionTime * 3) % 2 == 0 then
       ui.textColored('!! POLICE PURSUIT !!', REDC)
     else
