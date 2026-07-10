@@ -778,6 +778,7 @@ local COP = {
   bustRange    = 30,     -- m: suspect must be within this to be bustable
   radarRange   = 400,    -- m: show nearby players on the cop radar within this
   escapeRange  = 400,    -- m: if an engaged suspect gets this far, they escape
+  teleportJump = 120,    -- m: a one-frame position jump this big = a pit/TP teleport
   stopSpeed    = 6,      -- km/h below which the suspect counts as stopped
   stopTime     = 5,      -- seconds stopped-in-range before the bust lands
   pingInterval = 1.0,    -- how often a wanted runner broadcasts itself
@@ -867,6 +868,7 @@ local function copInitiatePursuit(index)
   if index and index >= 0 then
     cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld = true, index, -1, 0
     cop.alertAt = sessionTime
+    cop.selfLast, cop.suspLast = nil, nil                -- teleport tracking baseline
     copSetMsg('PURSUIT INITIATED')
     copAlertSuspect(index)                              -- tell them they're being chased
   end
@@ -914,6 +916,27 @@ local function updateCop(car, dt)
   end
   local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
   cop.suspectDist = math.sqrt(dx * dx + dz * dz)
+
+  -- teleport ends the chase: a one-frame jump = pit/TP. Cop TP = escape,
+  -- suspect TP = bust (fleeing counts as caught).
+  local sj = cop.selfLast and math.sqrt((car.position.x - cop.selfLast.x) ^ 2 + (car.position.z - cop.selfLast.z) ^ 2) or 0
+  local qj = cop.suspLast and math.sqrt((o.position.x - cop.suspLast.x) ^ 2 + (o.position.z - cop.suspLast.z) ^ 2) or 0
+  cop.selfLast = { x = car.position.x, z = car.position.z }
+  cop.suspLast = { x = o.position.x, z = o.position.z }
+  if sj > COP.teleportJump then                          -- cop teleported away → escape
+    copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('You left — suspect escaped')
+    alert.copLostUntil = sessionTime + 4; return
+  end
+  if qj > COP.teleportJump then                          -- suspect pitted/TP'd → bust
+    local wentry = copWanted[cop.lockIndex]
+    local nm = (wentry and wentry.name) or ac.getDriverName(cop.lockIndex) or 'suspect'
+    pcall(function() copEvent{ kind = 2, target = o.sessionID, name = storage.playerName } end)
+    economyReportArrest()
+    if wentry then economyEarn(COP.bounty, 'bust:' .. nm); copWanted[cop.lockIndex] = nil end
+    copSetMsg('Suspect fled — BUSTED ' .. nm); cop.msgUntil = sessionTime + 5
+    copEndPursuit(); return
+  end
+
   -- escape: suspect got more than escapeRange away
   if cop.suspectDist > COP.escapeRange then
     copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('Suspect escaped')
