@@ -2044,7 +2044,7 @@ end
 -- Body of the standalone POLICE window (only drawn when on duty). Shows wanted
 -- runners with an Initiate Pursuit button, or the live pursuit + bust progress.
 local function copAppBody()
-  ui.textColored('ACP POLICE · ON DUTY', REDC)
+  ui.textColored('MPD POLICE · ON DUTY', REDC)
   accentSep(REDC)
   if cop.engaged and cop.lockIndex >= 0 then
     local w = copWanted[cop.lockIndex]
@@ -2186,7 +2186,7 @@ end
 -- separate from the runner app. Auto-shows on duty; no need to open the main app.
 local function drawCopApp()
   if not copEligible() then return end
-  panel('ACP POLICE', vec2(24, 70), vec2(300, 240), copAppBody)
+  panel('MPD POLICE APP', vec2(24, 70), vec2(300, 240), copAppBody)
 end
 
 function script.drawUI()
