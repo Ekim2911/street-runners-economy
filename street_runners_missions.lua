@@ -787,9 +787,11 @@ local cop = { onDuty = false, engaged = false, lockIndex = -1, suspectDist = 1e9
   nearestIndex = -1, nearestDist = 1e9, stopSince = -1, bustHeld = 0, msg = '', msgUntil = -1 }
 
 local function copSetMsg(t) cop.msg, cop.msgUntil = t, sessionTime + 4 end
-local function copEndPursuit() cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld = false, -1, -1, 0 end
+local function copEndPursuit() cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld, cop.alertAt = false, -1, -1, 0, nil end
 local copWanted = {}        -- carIndex -> { name, at, index } of wanted runners we've heard
 local wantedPingAt = -100
+-- Set on the SUSPECT's client when a cop pings a pursuit at them.
+local chasedBy, chasedUntil = '', -1
 
 local function mySessionId()
   local id = -1
@@ -798,8 +800,9 @@ local function mySessionId()
 end
 
 -- Peer-to-peer cop<->runner channel. kind 1 = "I'm a wanted runner" ping;
--- kind 2 = "you're under arrest" (target = suspect sessionID). Wrapped so the
--- script still loads if OnlineEvent isn't available on the build.
+-- kind 2 = "you're under arrest" (target = suspect sessionID); kind 3 = "you're
+-- being pursued" alert (target = suspect sessionID). Wrapped so the script still
+-- loads if OnlineEvent isn't available on the build.
 local copEvent
 pcall(function()
   copEvent = ac.OnlineEvent({
@@ -813,9 +816,21 @@ pcall(function()
       if data.target == mySessionId() and delivery.active then
         deliveryFail('BUSTED by ' .. (data.name ~= '' and data.name or 'police') .. ' — cargo lost')
       end
+    elseif data.kind == 3 then
+      if data.target == mySessionId() then
+        chasedBy, chasedUntil = (data.name ~= '' and data.name or 'Police'), sessionTime + 5
+      end
     end
   end)
 end)
+
+-- Send the "you're being chased" alert to a suspect's car (by index).
+local function copAlertSuspect(index)
+  pcall(function()
+    local o = ac.getCar(index)
+    if o and copEvent then copEvent{ kind = 3, target = o.sessionID, name = storage.playerName } end
+  end)
+end
 
 local function copBroadcastWanted()
   if copEvent and sessionTime - wantedPingAt > COP.pingInterval then
@@ -842,7 +857,9 @@ end
 local function copInitiatePursuit(index)
   if index and index >= 0 then
     cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld = true, index, -1, 0
+    cop.alertAt = sessionTime
     copSetMsg('PURSUIT INITIATED')
+    copAlertSuspect(index)                              -- tell them they're being chased
   end
 end
 
@@ -887,6 +904,8 @@ local function updateCop(car, dt)
   end
   local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
   cop.suspectDist = math.sqrt(dx * dx + dz * dz)
+  -- keep reminding the suspect they're being chased (banner refreshes each ping)
+  if sessionTime - (cop.alertAt or 0) > 2 then cop.alertAt = sessionTime; copAlertSuspect(cop.lockIndex) end
   if cop.suspectDist <= COP.bustRange and (o.speedKmh or 0) < COP.stopSpeed then
     if cop.stopSince < 0 then cop.stopSince = sessionTime end
     cop.bustHeld = sessionTime - cop.stopSince
@@ -1742,6 +1761,15 @@ end
 -- Compact always-on driving HUD (cash + live run/drift state).
 local function drawMainHUD()
   panel('STREET RUNNERS', vec2(24, ui.windowSize().y - 220), vec2(280, 188), function()
+  -- police pursuit alert (blinks) — shown to whoever a cop is chasing
+  if sessionTime < chasedUntil then
+    if math.floor(sessionTime * 3) % 2 == 0 then
+      ui.textColored('!! POLICE PURSUIT !!', REDC)
+    else
+      ui.textColored('!! ' .. (chasedBy ~= '' and chasedBy or 'Police') .. ' IS CHASING YOU !!', REDC)
+    end
+    ui.separator()
+  end
   ui.textColored('街道走者', NEON); ui.sameLine()
   ui.textColored('«' .. titleDisplayName(storage.equippedTitle):upper() .. '»', GOLD)
   ui.textColored('BALANCE  ', DIM); ui.sameLine(); ui.textColored(money(storage.cash), WHITE)
