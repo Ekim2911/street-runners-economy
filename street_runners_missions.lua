@@ -27,6 +27,9 @@ local CONFIG = {
   copLevel = 20,
   copCars = { 'police', 'sheriff', 'patrol', 'crown_victoria', 'interceptor', 'charger_police',
               'acpursuit', 'undercover', 'sayrx_dodge_charger_undercover' },
+  -- The cop radar ignores AI traffic: cars that hide labels, or whose driver name
+  -- starts with one of these (your server's AI NamePrefix is "Traffic Guy").
+  trafficPrefixes = { 'traffic' },
   levelXpK = 250,             -- level = floor(1 + sqrt(lifetimeEarned / levelXpK))
   devSteamIds = { '76561199438773448' },   -- these players are always max level (dev/admin)
   -- Storyline audio streamed from the server's /audio folder (no install). Any
@@ -806,6 +809,20 @@ local function copBroadcastWanted()
   end
 end
 
+-- Is car index `i` a real human player (not AI traffic)? Traffic hides its
+-- labels and/or uses the "Traffic ..." name prefix on this server.
+local function isPlayerCar(o, i)
+  if not o or not o.isConnected or not o.position then return false end
+  if o.isHidingLabels then return false end
+  local nm = ac.getDriverName(i)
+  if not nm or nm == '' then return false end
+  local low = nm:lower()
+  for _, p in ipairs(CONFIG.trafficPrefixes or {}) do
+    if low:sub(1, #p) == p:lower() then return false end
+  end
+  return true
+end
+
 -- Engage a suspect (from the cop app's Initiate Pursuit button).
 local function copInitiatePursuit(index)
   if index and index >= 0 then
@@ -832,12 +849,11 @@ local function updateCop(car, dt)
     local sim = ac.getSim and ac.getSim(); if sim and sim.carsCount then n = sim.carsCount end
     for i = 1, n - 1 do
       local o = ac.getCar(i)
-      if o and o.isConnected and o.position then
+      if isPlayerCar(o, i) then                          -- real players only, no AI traffic
         local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
         local d = math.sqrt(dx * dx + dz * dz)
         if d <= COP.radarRange then
-          local w = copWanted[i]
-          nearby[#nearby + 1] = { index = i, dist = d, wanted = (w ~= nil), name = ac.getDriverName(i) or '???' }
+          nearby[#nearby + 1] = { index = i, dist = d, wanted = (copWanted[i] ~= nil), name = ac.getDriverName(i) or '???' }
         end
       end
     end
