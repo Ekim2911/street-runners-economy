@@ -85,8 +85,14 @@ try {
 } catch (e) {
   // index already exists
 }
+// Upgrade path for the cop arrests counter.
+try {
+  db.exec('ALTER TABLE players ADD COLUMN arrests INTEGER NOT NULL DEFAULT 0');
+} catch (e) {
+  // already has the column
+}
 
-const getPlayer = db.prepare('SELECT id, name, title, balance FROM players WHERE id = ?');
+const getPlayer = db.prepare('SELECT id, name, title, balance, arrests FROM players WHERE id = ?');
 const insertPlayer = db.prepare(
   'INSERT INTO players (id, name, title, balance, updated_at) VALUES (?, ?, ?, ?, ?)'
 );
@@ -95,6 +101,8 @@ const updatePlayer = db.prepare(
 );
 const topCash = db.prepare('SELECT name, title, balance FROM players ORDER BY balance DESC LIMIT ?');
 const deletePlayer = db.prepare('DELETE FROM players WHERE id = ?');
+const bumpArrests = db.prepare('UPDATE players SET arrests = arrests + 1, name = ?, title = ?, updated_at = ? WHERE id = ?');
+const topArrests = db.prepare("SELECT name, title, arrests FROM players WHERE arrests > 0 ORDER BY arrests DESC LIMIT ?");
 const insertDriftRun = db.prepare(`
   INSERT INTO drift_runs (zone_id, zone_name, player_id, player_name, score, combo_max, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -258,6 +266,19 @@ app.post('/players/:id/earn', (req, res) => {
 
 app.get('/leaderboard/cash', (req, res) => {
   res.json(topCash.all(parseLimit(req.query.limit)));
+});
+
+// A cop records a bust — bumps their arrest count (bounty cash is a separate /earn).
+app.post('/players/:id/arrest', (req, res) => {
+  const { name, title } = req.body || {};
+  const player = ensurePlayer(req.params.id, name, title);
+  bumpArrests.run(name || player.name, title !== undefined ? title : player.title, Date.now(), req.params.id);
+  const updated = getPlayer.get(req.params.id);
+  res.json({ id: req.params.id, arrests: (updated && updated.arrests) || null });
+});
+
+app.get('/leaderboard/arrests', (req, res) => {
+  res.json(topArrests.all(parseLimit(req.query.limit)));
 });
 
 // Admin: remove a player (e.g. test data or a cheater). Open unless

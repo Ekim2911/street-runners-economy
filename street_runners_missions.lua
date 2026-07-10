@@ -206,7 +206,7 @@ end
 ---------------------------------------------------------------------------
 
 local economy = { leaderboardCash = {}, driftLeaderboards = {}, hotlapLeaderboards = {},
-  hotlapCars = {}, hotlapCarBoards = {} }
+  hotlapCars = {}, hotlapCarBoards = {}, leaderboardArrests = {} }
 
 local function economyEnabled()
   return CONFIG.economyUrl ~= nil and CONFIG.economyUrl ~= ''
@@ -383,6 +383,20 @@ local function economyRefreshCashLeaderboard()
     if err or not response then return end
     local data = safeJsonParse(response.body)
     if data then economy.leaderboardCash = data end
+  end)
+end
+
+-- Cop arrests: report a bust (bumps the arrest counter) and pull the board.
+local function economyReportArrest()
+  economyPost('/players/' .. storage.playerId .. '/arrest',
+    { name = storage.playerName, title = storage.equippedTitle },
+    function(err, response) end)
+end
+local function economyRefreshArrestsLeaderboard()
+  economyGet('/leaderboard/arrests?limit=10', function(err, response)
+    if err or not response then return end
+    local data = safeJsonParse(response.body)
+    if data then economy.leaderboardArrests = data end
   end)
 end
 
@@ -879,6 +893,7 @@ local function updateCop(car, dt)
       local wentry = copWanted[cop.lockIndex]
       local nm = (wentry and wentry.name) or ac.getDriverName(cop.lockIndex) or 'suspect'
       pcall(function() copEvent{ kind = 2, target = o.sessionID, name = storage.playerName } end)
+      economyReportArrest()                             -- counts toward the arrests leaderboard
       if wentry then                                    -- bounty only for actually-wanted runners
         economyEarn(COP.bounty, 'bust:' .. nm)
         copSetMsg(string.format('BUSTED %s  +%s', nm, money(COP.bounty)))
@@ -1918,6 +1933,7 @@ local function leaderboardTab()
   if economyEnabled() and sessionTime - lbLastRefresh > 4 then
     lbLastRefresh = sessionTime
     economyRefreshCashLeaderboard()
+    economyRefreshArrestsLeaderboard()
     if drift.active then economyRefreshDriftLeaderboard(drift.zone.name) end
     for _, r in ipairs(ROUTES) do
       if r.hotlap then economyRefreshHotlapLeaderboard(r.name) end
@@ -1969,6 +1985,20 @@ local function leaderboardTab()
           ui.textColored(fmtLapTime(row.timeMs or 0), NEON)
         end
       end
+    end
+  end
+
+  -- Cop arrests board (most busts).
+  ui.separator()
+  ui.textColored('» MOST BUSTS  (police)', REDC)
+  ui.separator()
+  if #economy.leaderboardArrests == 0 then
+    ui.textColored(economyEnabled() and 'No arrests yet.' or 'Economy offline.', DIM)
+  else
+    for i, row in ipairs(economy.leaderboardArrests) do
+      ui.textColored(tostring(i) .. '.', rankColor(i)); ui.sameLine(40)
+      ui.textColored(row.name or '???', WHITE); ui.sameLine(300)
+      ui.textColored(tostring(row.arrests or 0) .. ' busts', REDC)
     end
   end
 end
