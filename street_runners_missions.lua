@@ -808,6 +808,7 @@ pcall(function()
     toName   = ac.StructItem.string(64),   -- target player's driver name (matched cross-client)
     fromName = ac.StructItem.string(64),   -- sender's name (cop, or runner for kind 1)
   }, function(sender, data)
+    cop.rx = (cop.rx or 0) + 1                            -- diagnostic: events received
     local myName = ac.getDriverName(0) or ''
     if data.kind == 1 then
       copWanted[sender.index] = { name = data.fromName, at = sessionTime, index = sender.index }
@@ -869,7 +870,7 @@ local function copInitiatePursuit(index)
   if index and index >= 0 then
     cop.engaged, cop.lockIndex, cop.stopSince, cop.bustHeld = true, index, -1, 0
     cop.alertAt = sessionTime
-    cop.selfLast, cop.suspLast, cop.suspHist = nil, nil, nil   -- teleport + speed tracking baseline
+    cop.selfLast, cop.suspLast, cop.suspHist, cop.lostSince = nil, nil, nil, nil   -- tracking baseline
     copSetMsg('PURSUIT INITIATED')
     copAlertSuspect(index)                              -- tell them they're being chased
     copChat(storage.playerName .. ' is pursuing ' .. (ac.getDriverName(index) or 'a suspect'))
@@ -949,7 +950,14 @@ local function updateCop(car, dt)
     copEndPursuit()
   end
 
-  if not o or not o.position or (o.isConnected == false) then doEscape('Suspect lost'); return end
+  -- tolerate a brief network blip (invalid for a moment) instead of ending the
+  -- chase as an escape — that was firing "evaded" instead of letting a bust land.
+  if not o or not o.position or (o.isConnected == false) then
+    cop.lostSince = cop.lostSince or sessionTime
+    if sessionTime - cop.lostSince > 2.0 then doEscape('Suspect lost') end
+    return
+  end
+  cop.lostSince = nil
   local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
   cop.suspectDist = math.sqrt(dx * dx + dz * dz)
 
@@ -2201,6 +2209,7 @@ local function copAppBody()
   if cop.msg ~= '' and sessionTime < cop.msgUntil then ui.textColored(cop.msg, NEON) end
   ui.separator()
   ui.textColored(string.format('bust: stop them %ds within %dm · bounty %s', COP.stopTime, COP.bustRange, money(COP.bounty)), DIM)
+  ui.textColored(string.format('net: %s · rx %d', copEvent and 'up' or 'OFF', cop.rx or 0), DIM)
 end
 
 local function editorTab()
