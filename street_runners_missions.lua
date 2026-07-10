@@ -775,11 +775,11 @@ end
 
 local COP = {
   bounty       = 5000,   -- cash a cop earns per bust
-  bustRange    = 30,     -- m: suspect must be within this to be bustable
+  bustRange    = 45,     -- m: suspect must be within this to be bustable (loose for net lag)
   radarRange   = 400,    -- m: show nearby players on the cop radar within this
   escapeRange  = 400,    -- m: if an engaged suspect gets this far, they escape
-  teleportJump = 120,    -- m: a one-frame position jump this big = a pit/TP teleport
-  stopSpeed    = 6,      -- km/h below which the suspect counts as stopped
+  teleportJump = 150,    -- m: a one-frame position jump this big = a pit/TP teleport
+  stopSpeed    = 12,     -- km/h below which the suspect counts as stopped
   stopTime     = 5,      -- seconds stopped-in-range before the bust lands
   pingInterval = 1.0,    -- how often a wanted runner broadcasts itself
   staleAfter   = 4.0,    -- drop a wanted runner not heard from in this long
@@ -2151,15 +2151,19 @@ local function copAppBody()
   ui.textColored('MPD POLICE · ON DUTY', REDC)
   accentSep(REDC)
   if cop.engaged and cop.lockIndex >= 0 then
-    local w = copWanted[cop.lockIndex]
-    ui.textColored('PURSUING  ' .. ((w and w.name) or 'suspect'), GOLD)
-    ui.textColored(string.format('%dm away', math.floor(cop.suspectDist or 0)), WHITE)
+    local so = ac.getCar(cop.lockIndex)
+    local sspd = (so and so.speedKmh) or 0
+    local sdist = cop.suspectDist or 0
+    ui.textColored('PURSUING  ' .. (ac.getDriverName(cop.lockIndex) or 'suspect'), GOLD)
+    ui.textColored(string.format('%dm away  ·  %d km/h', math.floor(sdist), math.floor(sspd)), WHITE)
     if cop.stopSince >= 0 then
       ui.textColored('BUSTING ', REDC); ui.sameLine()
       ui.textColored(meter(math.min(1, cop.bustHeld / COP.stopTime), 12), REDC); ui.sameLine()
       ui.textColored(string.format('%.0fs', math.max(0, COP.stopTime - cop.bustHeld)), REDC)
+    elseif sdist > COP.bustRange then
+      ui.textColored(string.format('Get within %dm to bust (you are %dm)', COP.bustRange, math.floor(sdist)), DIM)
     else
-      ui.textColored('Corner them — wait for them to STOP', DIM)
+      ui.textColored(string.format('In range — wait for them under %d km/h', COP.stopSpeed), GOLD)
     end
     if tintBtn('END PURSUIT##cend', BTN_DANGER) then
       copSendTo(cop.lockIndex, 4); copChat(storage.playerName .. ' called off the pursuit')
