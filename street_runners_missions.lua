@@ -1764,22 +1764,6 @@ end
 -- Compact always-on driving HUD (cash + live run/drift state).
 local function drawMainHUD()
   panel('STREET RUNNERS', vec2(24, ui.windowSize().y - 220), vec2(280, 188), function()
-  -- busted banner takes priority; otherwise the pursuit alert. Both blink.
-  if sessionTime < bustedUntil then
-    if math.floor(sessionTime * 3) % 2 == 0 then
-      ui.textColored('*** BUSTED ***', REDC)
-    else
-      ui.textColored('ARRESTED BY ' .. (bustedBy ~= '' and bustedBy or 'Police'), REDC)
-    end
-    ui.separator()
-  elseif sessionTime < chasedUntil then
-    if math.floor(sessionTime * 3) % 2 == 0 then
-      ui.textColored('!! POLICE PURSUIT !!', REDC)
-    else
-      ui.textColored('!! ' .. (chasedBy ~= '' and chasedBy or 'Police') .. ' IS CHASING YOU !!', REDC)
-    end
-    ui.separator()
-  end
   ui.textColored('街道走者', NEON); ui.sameLine()
   ui.textColored('«' .. titleDisplayName(storage.equippedTitle):upper() .. '»', GOLD)
   ui.textColored('BALANCE  ', DIM); ui.sameLine(); ui.textColored(money(storage.cash), WHITE)
@@ -2264,8 +2248,34 @@ local function drawCopApp()
   panel('MPD POLICE APP', vec2(24, 70), vec2(300, 240), copAppBody)
 end
 
+-- Big red banner across the top of the screen: shown to a player being chased
+-- or just busted. Uses the sized dwrite text API (proven in the old police app).
+local function drawBanner()
+  local busted = sessionTime < bustedUntil
+  local chased = sessionTime < chasedUntil
+  if not (busted or chased) then return end
+  if math.floor(sessionTime * 3) % 2 == 1 then return end   -- blink
+  local text = busted
+    and ('*** BUSTED ***   ARRESTED BY ' .. (bustedBy ~= '' and bustedBy or 'POLICE'):upper())
+    or  ((chasedBy ~= '' and chasedBy or 'POLICE'):upper() .. '  IS CHASING YOU')
+  pcall(function()
+    local sw = ui.windowSize().x
+    ui.beginTransparentWindow('sr_banner', vec2(0, 0), vec2(sw, 150), true)
+    pcall(function() ui.pushDWriteFont('Orbitron;Weight=Bold') end)
+    local fs = 36
+    local ts = ui.measureDWriteText(text, fs)
+    local ox = math.floor((sw - ts.x) / 2)
+    local oy = 72
+    ui.drawRectFilled(vec2(ox - 16, oy - 8), vec2(ox + ts.x + 16, oy + ts.y + 8), rgbm(0.5, 0, 0, 0.6))
+    ui.dwriteDrawText(text, fs, vec2(ox, oy), rgbm(1, 0.92, 0.92, 1))
+    pcall(function() ui.popDWriteFont() end)
+    ui.endTransparentWindow()
+  end)
+end
+
 function script.drawUI()
   pcall(drawMainHUD)
   pcall(drawApp)
   pcall(drawCopApp)
+  pcall(drawBanner)
 end
