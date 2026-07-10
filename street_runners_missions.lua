@@ -777,6 +777,7 @@ local COP = {
   bounty       = 5000,   -- cash a cop earns per bust
   bustRange    = 30,     -- m: suspect must be within this to be bustable
   radarRange   = 400,    -- m: show nearby players on the cop radar within this
+  escapeRange  = 400,    -- m: if an engaged suspect gets this far, they escape
   stopSpeed    = 6,      -- km/h below which the suspect counts as stopped
   stopTime     = 5,      -- seconds stopped-in-range before the bust lands
   pingInterval = 1.0,    -- how often a wanted runner broadcasts itself
@@ -791,7 +792,8 @@ local function copEndPursuit() cop.engaged, cop.lockIndex, cop.stopSince, cop.bu
 local copWanted = {}        -- carIndex -> { name, at, index } of wanted runners we've heard
 local wantedPingAt = -100
 -- Set on the SUSPECT's client when a cop pings a pursuit / busts them / gives up.
-local alert = { chasedBy = '', chasedUntil = -1, bustedBy = '', bustedUntil = -1, lostUntil = -1 }
+local alert = { chasedBy = '', chasedUntil = -1, bustedBy = '', bustedUntil = -1, lostUntil = -1,
+  copLostUntil = -1 }
 
 local function mySessionId()
   local id = -1
@@ -907,10 +909,16 @@ local function updateCop(car, dt)
   if not cop.engaged or cop.lockIndex < 0 then cop.stopSince, cop.bustHeld = -1, 0; return end
   local o = ac.getCar(cop.lockIndex)
   if not o or not o.position or (o.isConnected == false) then
-    copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('Suspect lost'); return
+    copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('Suspect lost')
+    alert.copLostUntil = sessionTime + 4; return
   end
   local dx, dz = o.position.x - car.position.x, o.position.z - car.position.z
   cop.suspectDist = math.sqrt(dx * dx + dz * dz)
+  -- escape: suspect got more than escapeRange away
+  if cop.suspectDist > COP.escapeRange then
+    copSendTo(cop.lockIndex, 4); copEndPursuit(); copSetMsg('Suspect escaped')
+    alert.copLostUntil = sessionTime + 4; return
+  end
   -- keep reminding the suspect they're being chased (banner refreshes each ping)
   if sessionTime - (cop.alertAt or 0) > 2 then cop.alertAt = sessionTime; copAlertSuspect(cop.lockIndex) end
   if cop.suspectDist <= COP.bustRange and (o.speedKmh or 0) < COP.stopSpeed then
@@ -2255,15 +2263,19 @@ end
 -- Big red banner across the top of the screen: shown to a player being chased
 -- or just busted. Uses the sized dwrite text API (proven in the old police app).
 local function drawBanner()
-  local busted = sessionTime < alert.bustedUntil
-  local lost   = sessionTime < alert.lostUntil
-  local chased = sessionTime < alert.chasedUntil
-  if not (busted or lost or chased) then return end
+  local busted  = sessionTime < alert.bustedUntil
+  local copLost = sessionTime < alert.copLostUntil
+  local lost    = sessionTime < alert.lostUntil
+  local chased  = sessionTime < alert.chasedUntil
+  if not (busted or copLost or lost or chased) then return end
   if math.floor(sessionTime * 3) % 2 == 1 then return end   -- blink
   local text, bg
   if busted then
     text = '*** BUSTED ***   ARRESTED BY ' .. (alert.bustedBy ~= '' and alert.bustedBy or 'POLICE'):upper()
     bg = rgbm(0.5, 0, 0, 0.6)
+  elseif copLost then
+    text = "YOU'VE LOST THE SUSPECT"
+    bg = rgbm(0.5, 0.25, 0, 0.6)                             -- amber = cop lost them
   elseif lost then
     text = 'YOU LOST THE COPS'
     bg = rgbm(0, 0.4, 0.1, 0.6)                              -- green = you got away
