@@ -488,17 +488,18 @@ local function economyLoadMissions()
           if p.dx and p.dz then dirs[#pts] = { tonumber(p.dx), tonumber(p.dz) } end
           if p.hwl and p.hwr then hws[#pts] = { tonumber(p.hwl), tonumber(p.hwr) } end
         end
+        local protectedM = d.protected == true          -- seeded/locked: no delete button
         if m.kind == 'route' then
           routes[#routes + 1] = { _id = m.id, name = d.name or m.name, target = d.target or 45,
             baseReward = d.baseReward or 500, bonusPerSecond = d.bonusPerSecond or 25, points = pts,
             dirs = next(dirs) and dirs or nil, hws = next(hws) and hws or nil,
-            hotlap = d.hotlap == true, checkpointRadius = tonumber(d.checkpointRadius) }
+            hotlap = d.hotlap == true, checkpointRadius = tonumber(d.checkpointRadius), protected = protectedM }
         elseif m.kind == 'zone' then
           zones[#zones + 1] = { _id = m.id, name = d.name or m.name, width = d.width or 8,
-            payoutPer = d.payoutPer or 2, points = pts }
+            payoutPer = d.payoutPer or 2, points = pts, protected = protectedM }
         elseif m.kind == 'delivery' then
           deliveries[#deliveries + 1] = { _id = m.id, name = d.name or m.name,
-            reward = tonumber(d.reward) or 3000, points = pts }
+            reward = tonumber(d.reward) or 3000, points = pts, protected = protectedM }
         end
       end
     end
@@ -1875,7 +1876,7 @@ local function missionsTab()
         ui.sameLine()
       end
       if tintBtn('TP##tpr' .. i, BTN_INFO) then teleportTo(r.points, r.checkpointRadius or CONFIG.checkpointRadius, r.dirs and r.dirs[1]) end
-      if r._id then ui.sameLine(); if tintBtn('x##dr' .. r._id, BTN_DANGER) then economyDeleteMission(r._id) end end
+      if r._id and not (r.protected or r.hotlap) then ui.sameLine(); if tintBtn('x##dr' .. r._id, BTN_DANGER) then economyDeleteMission(r._id) end end
     end
   end
   ui.separator()
@@ -1888,7 +1889,7 @@ local function missionsTab()
       ui.textColored((active and '● ' or '') .. z.name, active and MAGENTA or WHITE); ui.sameLine(230)
       ui.textColored('$' .. z.payoutPer .. '/pt', GOLD); ui.sameLine(345)
       if tintBtn('TP##tpz' .. i, BTN_INFO) then teleportTo(z.points) end
-      if z._id then ui.sameLine(); if tintBtn('x##dz' .. z._id, BTN_DANGER) then economyDeleteMission(z._id) end end
+      if z._id and not z.protected then ui.sameLine(); if tintBtn('x##dz' .. z._id, BTN_DANGER) then economyDeleteMission(z._id) end end
     end
   end
   ui.separator()
@@ -1902,7 +1903,7 @@ local function missionsTab()
       ui.textColored(money(d.reward) .. ' +stealth', GOLD); ui.sameLine(345)
       if tintBtn('Start##dl' .. i, BTN_GO) then startDelivery(d); appOpen = false end
       ui.sameLine(); if tintBtn('TP##tpd' .. i, BTN_INFO) then teleportTo(d.points) end
-      if d._id then ui.sameLine(); if tintBtn('x##dd' .. d._id, BTN_DANGER) then economyDeleteMission(d._id) end end
+      if d._id and not d.protected then ui.sameLine(); if tintBtn('x##dd' .. d._id, BTN_DANGER) then economyDeleteMission(d._id) end end
     end
   end
   if sessionTime < teleportMsgUntil then ui.textColored(teleportMsg, CYAN) end
