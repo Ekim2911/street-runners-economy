@@ -1833,7 +1833,6 @@ local function drawMainHUD()
   ui.textColored('BALANCE  ', DIM); ui.sameLine(); ui.textColored(money(storage.cash), WHITE)
   ui.textColored(string.format('LVL %d', playerLevel()), CYAN); ui.sameLine()
   ui.textColored(meter(levelProgress(), 8), CYAN)
-  if isDev() then ui.textColored(string.format('[dev] net rx %d', cop.rx or 0), DIM) end
   if isCopCar(currentCarId()) then
     if playerLevel() >= CONFIG.copLevel then
       ui.textColored('COP CAR · ON DUTY', NEON)
@@ -2210,7 +2209,6 @@ local function copAppBody()
   if cop.msg ~= '' and sessionTime < cop.msgUntil then ui.textColored(cop.msg, NEON) end
   ui.separator()
   ui.textColored(string.format('bust: stop them %ds within %dm · bounty %s', COP.stopTime, COP.bustRange, money(COP.bounty)), DIM)
-  ui.textColored(string.format('net: %s · rx %d', copEvent and 'up' or 'OFF', cop.rx or 0), DIM)
 end
 
 local function editorTab()
