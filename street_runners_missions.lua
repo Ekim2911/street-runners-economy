@@ -1867,8 +1867,14 @@ local function missionsTab()
       local active = run.active and run.route == r
       ui.textColored((active and '● ' or '') .. r.name, active and YEL3 or WHITE); ui.sameLine(230)
       ui.textColored(money(r.baseReward) .. ' +bonus', GOLD); ui.sameLine(345)
-      if tintBtn('Start##r' .. i, BTN_GO) then startRoute(r); appOpen = false end
-      ui.sameLine(); if tintBtn('TP##tpr' .. i, BTN_INFO) then teleportTo(r.points, r.checkpointRadius or CONFIG.checkpointRadius, r.dirs and r.dirs[1]) end
+      -- hotlaps auto-start on crossing the line and end at the finish — no Start button
+      if r.hotlap then
+        ui.textColored('cross line to start', DIM); ui.sameLine()
+      else
+        if tintBtn('Start##r' .. i, BTN_GO) then startRoute(r); appOpen = false end
+        ui.sameLine()
+      end
+      if tintBtn('TP##tpr' .. i, BTN_INFO) then teleportTo(r.points, r.checkpointRadius or CONFIG.checkpointRadius, r.dirs and r.dirs[1]) end
       if r._id then ui.sameLine(); if tintBtn('x##dr' .. r._id, BTN_DANGER) then economyDeleteMission(r._id) end end
     end
   end
