@@ -796,11 +796,6 @@ local wantedPingAt = -100
 local alert = { chasedBy = '', chasedUntil = -1, bustedBy = '', bustedUntil = -1, lostUntil = -1,
   copLostUntil = -1, copWinUntil = -1 }
 
-local function mySessionId()
-  local id = -1
-  pcall(function() local me = ac.getCar(0); if me then id = me.sessionID end end)
-  return id
-end
 
 -- Peer-to-peer cop<->runner channel. kind 1 = "I'm a wanted runner" ping;
 -- kind 2 = "you're under arrest" (target = suspect sessionID); kind 3 = "you're
@@ -809,24 +804,21 @@ end
 local copEvent
 pcall(function()
   copEvent = ac.OnlineEvent({
-    kind   = ac.StructItem.int16(),
-    target = ac.StructItem.int16(),
-    name   = ac.StructItem.string(40),
+    kind     = ac.StructItem.int16(),
+    toName   = ac.StructItem.string(64),   -- target player's driver name (matched cross-client)
+    fromName = ac.StructItem.string(64),   -- sender's name (cop, or runner for kind 1)
   }, function(sender, data)
+    local myName = ac.getDriverName(0) or ''
     if data.kind == 1 then
-      copWanted[sender.index] = { name = data.name, at = sessionTime, index = sender.index }
-    elseif data.kind == 2 then
-      if data.target == mySessionId() then
-        local by = (data.name ~= '' and data.name or 'Police')
+      copWanted[sender.index] = { name = data.fromName, at = sessionTime, index = sender.index }
+    elseif data.toName ~= '' and data.toName == myName then
+      local by = (data.fromName ~= '' and data.fromName or 'Police')
+      if data.kind == 2 then
         alert.bustedBy, alert.bustedUntil, alert.chasedUntil = by, sessionTime + 7, -1
         if delivery.active then deliveryFail('BUSTED by ' .. by .. ' — cargo lost') end
-      end
-    elseif data.kind == 3 then
-      if data.target == mySessionId() then
-        alert.chasedBy, alert.chasedUntil = (data.name ~= '' and data.name or 'Police'), sessionTime + 5
-      end
-    elseif data.kind == 4 then
-      if data.target == mySessionId() then
+      elseif data.kind == 3 then
+        alert.chasedBy, alert.chasedUntil = by, sessionTime + 5
+      elseif data.kind == 4 then
         alert.lostUntil, alert.chasedUntil = sessionTime + 5, -1     -- you shook the cops
       end
     end
@@ -834,13 +826,14 @@ pcall(function()
 end)
 
 -- Queue a message of `kind` to a suspect (by car index), resent a few times so
--- a dropped packet doesn't lose the notification. Processed in updateCop.
+-- a dropped packet doesn't lose the notification. Targets by driver name (the
+-- one identity that matches across clients). Processed in updateCop.
 local function copSendTo(index, kind)
   pcall(function()
-    local o = ac.getCar(index)
-    if o and o.sessionID ~= nil then
+    local nm = ac.getDriverName(index)
+    if nm and nm ~= '' then
       cop.outbox = cop.outbox or {}
-      cop.outbox[#cop.outbox + 1] = { kind = kind, target = o.sessionID, left = 3, nextAt = sessionTime }
+      cop.outbox[#cop.outbox + 1] = { kind = kind, toName = nm, left = 3, nextAt = sessionTime }
     end
   end)
 end
@@ -853,7 +846,7 @@ local function copChat(text) pcall(function() ac.sendChatMessage('[MPD] ' .. tex
 local function copBroadcastWanted()
   if copEvent and sessionTime - wantedPingAt > COP.pingInterval then
     wantedPingAt = sessionTime
-    pcall(function() copEvent{ kind = 1, target = 0, name = storage.playerName } end)
+    pcall(function() copEvent{ kind = 1, toName = '', fromName = storage.playerName } end)
   end
 end
 
@@ -893,7 +886,7 @@ local function updateCop(car, dt)
     local keep = {}
     for _, m in ipairs(cop.outbox) do
       if sessionTime >= m.nextAt then
-        pcall(function() if copEvent then copEvent{ kind = m.kind, target = m.target, name = storage.playerName } end end)
+        pcall(function() if copEvent then copEvent{ kind = m.kind, toName = m.toName, fromName = storage.playerName } end end)
         m.left, m.nextAt = m.left - 1, sessionTime + 0.25
       end
       if m.left > 0 then keep[#keep + 1] = m end
