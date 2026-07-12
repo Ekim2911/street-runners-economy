@@ -49,6 +49,13 @@ local CONFIG = {
     comboMax = 6,
     straightenGrace = 1.2,    -- seconds allowed below minAngle before combo resets
     scoreScale = 1.0,
+    -- Crash detection: a hit into a car/wall/object is a deceleration spike far
+    -- beyond braking (road cars brake at ~70 km/h/s ≈ 2G max). A crash voids the
+    -- active run. Needs BOTH a hard rate AND a real drop so sensor jitter/curbs
+    -- don't false-trigger, and only counts above a minimum speed.
+    crashDecel = 200,         -- km/h per second — impact if the drop rate exceeds this
+    crashDrop = 12,           -- km/h — and the single-frame speed loss exceeds this
+    crashMinSpeed = 22,       -- km/h — ignore below this (parking / slow scrubbing)
   },
 }
 
@@ -610,6 +617,7 @@ local drift = {
   active = false, zone = nil, score = 0, combo = 1, angle = 0,
   state = 'idle', -- idle | drifting | spin
   belowMinTimer = 0, comboMax = 1,
+  prevSpeed = 0,  -- last frame's speed, for crash (deceleration-spike) detection
 }
 
 local function driftBank()
@@ -625,14 +633,26 @@ local function driftBank()
   drift.state = 'idle'
 end
 
+-- A crash (into a car, wall, or object) ends the run WITHOUT banking — the score
+-- is forfeited, nothing goes to the leaderboard. Shows a brief "CRASHED" flash.
+local function driftCrash()
+  drift.bankedName, drift.bankedScore, drift.bankedUntil = drift.zone.name, -1, sessionTime + 6
+  drift.active, drift.zone, drift.score, drift.combo, drift.comboMax = false, nil, 0, 1, 1
+  drift.state = 'idle'
+  -- brief pause before a new run auto-arms: lets the CRASHED flash show and
+  -- stops a wall-bounce from instantly starting (and re-crashing) a fresh run
+  drift.crashCooldownUntil = sessionTime + 2
+end
+
 local function updateDriftZones(car, dt)
   local inAnyZone = false
   for _, zone in ipairs(DRIFT_ZONES) do
     if nearestCorridorDist(car.position, zone.points) <= zone.width / 2 then
       inAnyZone = true
-      if not drift.active or drift.zone ~= zone then
+      if (not drift.active or drift.zone ~= zone) and sessionTime >= (drift.crashCooldownUntil or -1) then
         if drift.active and drift.zone ~= zone then driftBank() end
         drift.active, drift.zone, drift.score, drift.combo, drift.comboMax = true, zone, 0, 1, 1
+        drift.prevSpeed = car.speedKmh
         economyRefreshDriftLeaderboard(zone.name)
       end
       break
@@ -648,6 +668,16 @@ local function updateDriftZones(car, dt)
   local angle = slipAngleDeg(car)
   local speed = car.speedKmh
   drift.angle = angle
+
+  -- Crash check: a sudden deceleration spike beyond braking = an impact → void run.
+  -- drop uses last frame's speed; (speed + drop) is the pre-impact speed.
+  local drop = drift.prevSpeed - speed
+  drift.prevSpeed = speed
+  if dt > 0 and drop > CONFIG.drift.crashDrop and (drop / dt) > CONFIG.drift.crashDecel
+     and (speed + drop) > CONFIG.drift.crashMinSpeed then
+    driftCrash()
+    return
+  end
 
   if angle >= CONFIG.drift.spinAngle then
     drift.state = 'spin'
@@ -1881,8 +1911,13 @@ local function drawMainHUD()
     ui.textColored(string.format('%s   %d°   %d km/h', drift.state:upper(), math.floor(drift.angle), math.floor(carSpeed())), stateCol)
   elseif drift.bankedName and sessionTime < (drift.bankedUntil or -1) then
     ui.separator()
-    ui.textColored(string.format('DRIFT BANKED  %s', comma(drift.bankedScore or 0)), MAGENTA)
-    ui.textColored('» ' .. drift.bankedName:upper() .. '  (high score)', DIM)
+    if (drift.bankedScore or 0) < 0 then
+      ui.textColored('CRASHED — run voided', REDC)
+      ui.textColored('» ' .. drift.bankedName:upper() .. '  (no score)', DIM)
+    else
+      ui.textColored(string.format('DRIFT BANKED  %s', comma(drift.bankedScore or 0)), MAGENTA)
+      ui.textColored('» ' .. drift.bankedName:upper() .. '  (high score)', DIM)
+    end
   end
 
   if delivery.active and delivery.mission then
