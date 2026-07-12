@@ -614,10 +614,12 @@ local drift = {
 
 local function driftBank()
   if drift.score > 0 then
-    local payout = math.floor(drift.score * drift.zone.payoutPer)
-    economyEarn(payout, 'drift:' .. drift.zone.name)
+    -- Drift zones are score-only: no money, just submit the run so the
+    -- per-zone high-score leaderboard keeps your best. Stash a brief
+    -- on-screen confirmation on the drift table (persists after reset).
     economyReportDriftRun(drift.zone, drift.score, drift.comboMax)
     economyRefreshDriftLeaderboard(drift.zone.name)
+    drift.bankedName, drift.bankedScore, drift.bankedUntil = drift.zone.name, drift.score, sessionTime + 6
   end
   drift.active, drift.zone, drift.score, drift.combo, drift.comboMax = false, nil, 0, 1, 1
   drift.state = 'idle'
@@ -1877,6 +1879,10 @@ local function drawMainHUD()
     ui.textColored(meter(frac, 10), comboCol); ui.sameLine()
     ui.textColored(string.format('x%.1f', drift.combo), comboCol)
     ui.textColored(string.format('%s   %d°   %d km/h', drift.state:upper(), math.floor(drift.angle), math.floor(carSpeed())), stateCol)
+  elseif drift.bankedName and sessionTime < (drift.bankedUntil or -1) then
+    ui.separator()
+    ui.textColored(string.format('DRIFT BANKED  %s', comma(drift.bankedScore or 0)), MAGENTA)
+    ui.textColored('» ' .. drift.bankedName:upper() .. '  (high score)', DIM)
   end
 
   if delivery.active and delivery.mission then
@@ -1925,11 +1931,15 @@ local function teleportTo(pts, radius, dir)
     ax, az = perpXZ(pts[1], pts[2] or pts[1])
   end
   local px, py, pz = p.x, p.y + 0.4, p.z
+  -- always sit a few feet behind the start line so the nose starts before it
+  -- (routes AND drift zones — zones stay centered laterally)
+  px = px - dx * TP_BACK
+  pz = pz - dz * TP_BACK
   if radius then
-    -- drop into the far-right lane, a bit behind the line
+    -- routes also drop into the far-right lane
     local lane = math.max(0, radius - 2)
-    px = px + ax * lane * TP_LANE_SIGN - dx * TP_BACK
-    pz = pz + az * lane * TP_LANE_SIGN - dz * TP_BACK
+    px = px + ax * lane * TP_LANE_SIGN
+    pz = pz + az * lane * TP_LANE_SIGN
   end
   -- face along the route (toward the next point). setCarPosition's direction
   -- convention points the opposite way, so negate.
@@ -1997,7 +2007,7 @@ local function missionsTab()
     for i, z in ipairs(DRIFT_ZONES) do
       local active = drift.active and drift.zone == z
       ui.textColored((active and '● ' or '') .. z.name, active and MAGENTA or WHITE); ui.sameLine(230)
-      ui.textColored('$' .. z.payoutPer .. '/pt', GOLD); ui.sameLine(345)
+      ui.textColored('HIGH SCORE', MAGENTA); ui.sameLine(345)
       if tintBtn('TP##tpz' .. i, BTN_INFO) then teleportTo(z.points) end
       if z._id and not z.protected then
         ui.sameLine(); if tintBtn('x##dz' .. z._id, BTN_DANGER) then economyDeleteMission(z._id) end
