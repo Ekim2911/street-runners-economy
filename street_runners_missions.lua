@@ -646,6 +646,7 @@ local function driftBank()
     economyReportDriftRun(drift.zone, drift.score, drift.comboMax)
     economyRefreshDriftLeaderboard(drift.zone.name)
     drift.bankedName, drift.bankedScore, drift.bankedUntil = drift.zone.name, drift.score, sessionTime + 6
+    drift.bannerUntil = sessionTime + 3.5      -- full-screen banner flash
   end
   drift.active, drift.zone, drift.score, drift.combo, drift.comboMax = false, nil, 0, 1, 1
   drift.state = 'idle'
@@ -655,6 +656,7 @@ end
 -- is forfeited, nothing goes to the leaderboard. Shows a brief "CRASHED" flash.
 local function driftCrash()
   drift.bankedName, drift.bankedScore, drift.bankedUntil = drift.zone.name, -1, sessionTime + 6
+  drift.bannerUntil = sessionTime + 3.5        -- full-screen "CRASHED" banner flash
   drift.active, drift.zone, drift.score, drift.combo, drift.comboMax = false, nil, 0, 1, 1
   drift.state = 'idle'
   -- brief pause before a new run auto-arms: lets the CRASHED flash show and
@@ -2448,7 +2450,10 @@ local function drawBanner()
   local copLost = sessionTime < alert.copLostUntil
   local lost    = sessionTime < alert.lostUntil
   local chased  = sessionTime < alert.chasedUntil
-  if not (busted or copWin or copLost or lost or chased) then return end
+  -- drift + hotlap run-ended events also flash as a full-screen banner
+  local driftFlash  = drift.bannerUntil and sessionTime < drift.bannerUntil
+  local hotlapFlash = lastHotlap.name and (sessionTime - lastHotlap.at) < 3.5
+  if not (busted or copWin or copLost or lost or chased or driftFlash or hotlapFlash) then return end
   if math.floor(sessionTime * 3) % 2 == 1 then return end   -- blink
   local text, bg
   if busted then
@@ -2463,9 +2468,23 @@ local function drawBanner()
   elseif lost then
     text = 'YOU LOST THE COPS'
     bg = rgbm(0, 0.4, 0.1, 0.6)                              -- green = you got away
-  else
+  elseif chased then
     text = (alert.chasedBy ~= '' and alert.chasedBy or 'POLICE'):upper() .. '  IS CHASING YOU'
     bg = rgbm(0.5, 0, 0, 0.6)
+  elseif hotlapFlash and lastHotlap.valid == false then
+    text = 'LAP INVALIDATED — ' .. tostring(lastHotlap.reason or ''):upper()
+    bg = rgbm(0.5, 0, 0, 0.6)                                -- red = spoiled
+  elseif hotlapFlash and lastHotlap.valid then
+    text = 'CLEAN LAP   ' .. fmtLapTime(lastHotlap.timeMs)
+    bg = rgbm(0, 0.4, 0.1, 0.6)                              -- green = counted
+  elseif driftFlash and (drift.bankedScore or 0) < 0 then
+    text = 'CRASHED — RUN VOIDED'
+    bg = rgbm(0.5, 0, 0, 0.6)                                -- red = voided
+  elseif driftFlash then
+    text = 'DRIFT BANKED   ' .. comma(drift.bankedScore or 0)
+    bg = rgbm(0.42, 0, 0.42, 0.6)                            -- magenta = high score
+  else
+    return
   end
   pcall(function()
     local sw = ui.windowSize().x
