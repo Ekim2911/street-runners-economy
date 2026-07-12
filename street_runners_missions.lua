@@ -526,6 +526,12 @@ local function economyDeleteMission(id)
   economyPostRaw('/routes/' .. id .. '/delete', '{}', function(err, response) economyLoadMissions() end)
 end
 
+local function economyRenameMission(id, name)
+  if not id or not name or name == '' then return end
+  economyPostRaw('/routes/' .. id .. '/rename', string.format('{"name":%s}', jsStr(name)),
+    function(err, response) economyLoadMissions() end)
+end
+
 ---------------------------------------------------------------------------
 -- Shop actions
 ---------------------------------------------------------------------------
@@ -1076,6 +1082,7 @@ local editor = {
   target = 45, baseReward = 500, bonusPerSecond = 25,   -- route fields
   width = 8, payoutPer = 2,                              -- zone fields
   reward = 3000,                                         -- delivery field
+  renId = nil, renBuf = '',                              -- inline mission rename state
   captureReq = false,    -- set by the button/hotkey; fulfilled in draw3D where track rays work
   freeCam = true,        -- true = drop where the camera aims (fly free cam); false = at the car
 }
@@ -1932,6 +1939,11 @@ local function teleportTo(pts, radius, dir)
 end
 
 local function missionsTab()
+  -- per-row "ren" button → arms the rename bar at the top
+  local function renBtn(id, name)
+    if id then ui.sameLine(); if tintBtn('ren##rn' .. id, BTN_INFO) then editor.renId, editor.renBuf = id, name end end
+  end
+
   if run.active and run.route then
     ui.textColored(string.format('● ACTIVE  %s   CP %d/%d   %.1fs', run.route.name, run.index, #run.route.points, sessionTime - run.startTime), YEL3)
     ui.sameLine(); if tintBtn('Cancel##cxr', BTN_DANGER) then run.active = false; run.route = nil end
@@ -1944,6 +1956,15 @@ local function missionsTab()
       delivery.stage == 'pickup' and 'to pickup' or 'to drop', math.floor(delivery.heat)), GOLD)
     ui.sameLine(); if tintBtn('Cancel##cxd', BTN_DANGER) then delivery.active = false; delivery.mission = nil end
     accentSep(GOLD)
+  end
+
+  -- rename bar (armed by any row's "ren" button)
+  if editor.renId then
+    ui.textColored('Rename:', GOLD); ui.sameLine()
+    pcall(function() editor.renBuf = ui.inputText('##renbuf', editor.renBuf) or editor.renBuf end)
+    ui.sameLine(); if tintBtn('Save##rensave', BTN_GO) then economyRenameMission(editor.renId, editor.renBuf); editor.renId = nil end
+    ui.sameLine(); if tintBtn('Cancel##rencx', BTN_MUTED) then editor.renId = nil end
+    ui.separator()
   end
 
   ui.textColored('» ROUTES', CYAN)
@@ -1962,7 +1983,10 @@ local function missionsTab()
         ui.sameLine()
       end
       if tintBtn('TP##tpr' .. i, BTN_INFO) then teleportTo(r.points, r.checkpointRadius or CONFIG.checkpointRadius, r.dirs and r.dirs[1]) end
-      if r._id and not (r.protected or r.hotlap) then ui.sameLine(); if tintBtn('x##dr' .. r._id, BTN_DANGER) then economyDeleteMission(r._id) end end
+      if r._id and not (r.protected or r.hotlap) then
+        ui.sameLine(); if tintBtn('x##dr' .. r._id, BTN_DANGER) then economyDeleteMission(r._id) end
+        renBtn(r._id, r.name)
+      end
     end
   end
   ui.separator()
@@ -1975,7 +1999,10 @@ local function missionsTab()
       ui.textColored((active and '● ' or '') .. z.name, active and MAGENTA or WHITE); ui.sameLine(230)
       ui.textColored('$' .. z.payoutPer .. '/pt', GOLD); ui.sameLine(345)
       if tintBtn('TP##tpz' .. i, BTN_INFO) then teleportTo(z.points) end
-      if z._id and not z.protected then ui.sameLine(); if tintBtn('x##dz' .. z._id, BTN_DANGER) then economyDeleteMission(z._id) end end
+      if z._id and not z.protected then
+        ui.sameLine(); if tintBtn('x##dz' .. z._id, BTN_DANGER) then economyDeleteMission(z._id) end
+        renBtn(z._id, z.name)
+      end
     end
   end
   ui.separator()
@@ -1989,7 +2016,10 @@ local function missionsTab()
       ui.textColored(money(d.reward) .. ' +stealth', GOLD); ui.sameLine(345)
       if tintBtn('Start##dl' .. i, BTN_GO) then startDelivery(d); appOpen = false end
       ui.sameLine(); if tintBtn('TP##tpd' .. i, BTN_INFO) then teleportTo(d.points) end
-      if d._id and not d.protected then ui.sameLine(); if tintBtn('x##dd' .. d._id, BTN_DANGER) then economyDeleteMission(d._id) end end
+      if d._id and not d.protected then
+        ui.sameLine(); if tintBtn('x##dd' .. d._id, BTN_DANGER) then economyDeleteMission(d._id) end
+        renBtn(d._id, d.name)
+      end
     end
   end
   if sessionTime < teleportMsgUntil then ui.textColored(teleportMsg, CYAN) end

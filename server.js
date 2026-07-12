@@ -156,6 +156,8 @@ const upsertMission = db.prepare(`
   ON CONFLICT(kind, name) DO UPDATE SET data = excluded.data
 `);
 const deleteMission = db.prepare('DELETE FROM missions WHERE id = ?');
+const getMissionById = db.prepare('SELECT id, kind, name, data FROM missions WHERE id = ?');
+const renameMission = db.prepare('UPDATE missions SET name = ?, data = ? WHERE id = ?');
 
 // Seed canonical, generated routes (e.g. the H1 Hotlap) on startup. Upserted so
 // a redeploy with a regenerated seed updates the course; edit the JSON + redeploy
@@ -380,6 +382,21 @@ app.delete('/routes/:id', (req, res) => {
 app.post('/routes/:id/delete', (req, res) => {
   const info = deleteMission.run(Number(req.params.id));
   res.json({ deleted: Number(info.changes) });
+});
+
+// Rename a mission (updates both the row name and data.name).
+app.post('/routes/:id/rename', (req, res) => {
+  const name = String((req.body || {}).name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const row = getMissionById.get(Number(req.params.id));
+  if (!row) return res.status(404).json({ error: 'not found' });
+  const clash = listMissions.all().find((r) => r.kind === row.kind && r.name === name && r.id !== row.id);
+  if (clash) return res.status(409).json({ error: 'a mission of this kind already has that name' });
+  let data = {};
+  try { data = JSON.parse(row.data); } catch (e) { data = {}; }
+  data.name = name;
+  renameMission.run(name, JSON.stringify(data), Number(req.params.id));
+  res.json({ id: row.id, name });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
