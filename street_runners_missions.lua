@@ -57,6 +57,16 @@ local CONFIG = {
     crashDrop = 12,           -- km/h — and the single-frame speed loss exceeds this
     crashMinSpeed = 22,       -- km/h — ignore below this (parking / slow scrubbing)
   },
+  hotlap = {
+    -- Clean-lap enforcement. A lap is invalidated (finishes but doesn't count /
+    -- pays nothing) on ANY contact (reuses the drift crash model) or on leaving
+    -- the track. Off-track/cutting is read from car.wheelsOutside (number of
+    -- wheels off the racing surface) — cutting a corner drops wheels onto
+    -- grass/curb, so this catches both. That field is a native that may not
+    -- exist on every CSP build; if absent the off-track check silently disables
+    -- (contact + strict checkpoint order still apply). Verify in-game.
+    maxWheelsOff = 2,         -- invalidate at this many wheels off track (2 = a real cut)
+  },
 }
 
 -- Paste captured routes/zones here (via the editor's Copy buttons) and set showEditor = false.
@@ -579,13 +589,15 @@ end
 -- timer; this is guaranteed to track real elapsed time.
 local sessionTime = 0
 
-local run = { active = false, route = nil, index = 0, startTime = 0 }
+local run = { active = false, route = nil, index = 0, startTime = 0,
+  valid = true, invalidReason = nil, prevSpeed = nil }
 
 local function startRoute(route)
   run.active = true
   run.route = route
   run.index = 1
   run.startTime = sessionTime
+  run.valid, run.invalidReason, run.prevSpeed = true, nil, nil  -- fresh clean lap
 end
 
 -- Set by finishRoute for a hotlap so the HUD/leaderboard can flash the result.
@@ -594,16 +606,22 @@ local lastHotlap = { name = nil, timeMs = 0, at = -100 }
 local function finishRoute()
   local route = run.route
   local elapsed = sessionTime - run.startTime
-  local bonus = math.max(0, (route.target - elapsed) * route.bonusPerSecond)
-  local payout = route.baseReward + math.floor(bonus)
-  economyEarn(payout, 'checkpoint:' .. route.name)
   if route.hotlap then
     local timeMs = math.floor(elapsed * 1000)
-    economyReportHotlap(route, timeMs)
-    economyRefreshHotlapLeaderboard(route.name)
-    economyRefreshHotlapCars(route.name)                     -- LAPS tab: per-car records
-    economyRefreshHotlapCarBoard(route.name, currentCarId())
-    lastHotlap = { name = route.name, timeMs = timeMs, at = sessionTime }
+    if run.valid then
+      local bonus = math.max(0, (route.target - elapsed) * route.bonusPerSecond)
+      economyEarn(route.baseReward + math.floor(bonus), 'checkpoint:' .. route.name)
+      economyReportHotlap(route, timeMs)
+      economyRefreshHotlapLeaderboard(route.name)
+      economyRefreshHotlapCars(route.name)                   -- LAPS tab: per-car records
+      economyRefreshHotlapCarBoard(route.name, currentCarId())
+    end
+    -- Invalid laps still flash a result (so you know it ran) but pay/submit nothing.
+    lastHotlap = { name = route.name, timeMs = timeMs, at = sessionTime,
+      valid = run.valid, reason = run.invalidReason }
+  else
+    local bonus = math.max(0, (route.target - elapsed) * route.bonusPerSecond)
+    economyEarn(route.baseReward + math.floor(bonus), 'checkpoint:' .. route.name)
   end
   run.active = false
   run.route = nil
@@ -703,8 +721,28 @@ end
 -- Checkpoint update
 ---------------------------------------------------------------------------
 
-local function updateCheckpoints(car)
+local function updateCheckpoints(car, dt)
   if not run.active then return end
+
+  -- Hotlaps must be CLEAN: any contact, or leaving the track (incl. cutting a
+  -- corner), invalidates the lap. It still runs to the finish, but an invalid
+  -- lap won't be submitted to the leaderboard and pays nothing.
+  if run.route.hotlap and run.valid then
+    local sp = car.speedKmh
+    local drop = (run.prevSpeed or sp) - sp
+    run.prevSpeed = sp
+    if dt and dt > 0 and drop > CONFIG.drift.crashDrop and (drop / dt) > CONFIG.drift.crashDecel
+       and (sp + drop) > CONFIG.drift.crashMinSpeed then
+      run.valid, run.invalidReason = false, 'contact'                 -- hit something
+    else
+      -- wheels off the racing surface (native; guarded — skipped if unsupported)
+      local ok, wout = pcall(function() return car.wheelsOutside end)
+      if ok and type(wout) == 'number' and wout >= CONFIG.hotlap.maxWheelsOff then
+        run.valid, run.invalidReason = false, 'off track'
+      end
+    end
+  end
+
   local target = run.route.points[run.index]
   if dist2D(car.position, target) <= (run.route.checkpointRadius or CONFIG.checkpointRadius) then
     if run.index >= #run.route.points then
@@ -1282,7 +1320,7 @@ function script.update(dt)
   ensureDisplayName()
   if not missionsLoaded and economyEnabled() then missionsLoaded = true; economyLoadMissions() end
   updateHotlapAutostart(car)
-  updateCheckpoints(car)
+  updateCheckpoints(car, dt)
   updateDriftZones(car, dt)
   updateDelivery(car, dt)
   updateCop(car, dt)
@@ -1887,16 +1925,25 @@ local function drawMainHUD()
   if run.active then
     ui.separator()
     if run.route.hotlap then
-      ui.textColored(string.format('HOTLAP  %s', run.route.name), CYAN)
+      ui.textColored(string.format('HOTLAP  %s', run.route.name), run.valid and CYAN or REDC)
       ui.textColored(string.format('CP %d / %d   %s', run.index, #run.route.points,
-        fmtLapTime((sessionTime - run.startTime) * 1000)), WHITE)
+        fmtLapTime((sessionTime - run.startTime) * 1000)), run.valid and WHITE or REDC)
+      if not run.valid then
+        ui.textColored('LAP INVALID — ' .. tostring(run.invalidReason or ''):upper()
+          .. ' (won\'t count)', REDC)
+      end
     else
       ui.textColored(string.format('CHECKPOINT  %d / %d', run.index, #run.route.points), CYAN)
       ui.textColored(string.format('TIME  %.1fs', sessionTime - run.startTime), WHITE)
     end
   elseif lastHotlap.name and sessionTime - lastHotlap.at < 6 then
     ui.separator()
-    ui.textColored(string.format('LAP DONE  %s', fmtLapTime(lastHotlap.timeMs)), NEON)
+    if lastHotlap.valid == false then
+      ui.textColored(string.format('LAP INVALIDATED — %s', tostring(lastHotlap.reason or ''):upper()), REDC)
+      ui.textColored(fmtLapTime(lastHotlap.timeMs) .. '  (not counted)', DIM)
+    else
+      ui.textColored(string.format('LAP DONE  %s', fmtLapTime(lastHotlap.timeMs)), NEON)
+    end
   end
 
   if drift.active then
