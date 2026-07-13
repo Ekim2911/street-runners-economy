@@ -56,6 +56,7 @@ local CONFIG = {
     crashDecel = 200,         -- km/h per second — impact if the drop rate exceeds this
     crashDrop = 12,           -- km/h — and the single-frame speed loss exceeds this
     crashMinSpeed = 22,       -- km/h — ignore below this (parking / slow scrubbing)
+    contactMinSpeed = 10,     -- km/h — ac.onCarCollision below this = a crawl/pit nudge, ignore
   },
   hotlap = {
     -- Clean-lap enforcement. A lap is invalidated (finishes but doesn't count /
@@ -598,6 +599,7 @@ local function startRoute(route)
   run.index = 1
   run.startTime = sessionTime
   run.valid, run.invalidReason, run.prevSpeed = true, nil, nil  -- fresh clean lap
+  run.collisionAt = nil  -- don't carry a pre-lap impact into this lap
 end
 
 -- Set by finishRoute for a hotlap so the HUD/leaderboard can flash the result.
@@ -635,7 +637,9 @@ local drift = {
   active = false, zone = nil, score = 0, combo = 1, angle = 0,
   state = 'idle', -- idle | drifting | spin
   belowMinTimer = 0, comboMax = 1,
-  prevSpeed = 0,  -- last frame's speed, for crash (deceleration-spike) detection
+  prevSpeed = 0,  -- last frame's speed, for crash (deceleration-spike) fallback
+  collisionHooked = false,  -- ac.onCarCollision registered yet?
+  collisionAt = nil,        -- sessionTime of the last real wall/car impact
 }
 
 local function driftBank()
@@ -673,6 +677,7 @@ local function updateDriftZones(car, dt)
         if drift.active and drift.zone ~= zone then driftBank() end
         drift.active, drift.zone, drift.score, drift.combo, drift.comboMax = true, zone, 0, 1, 1
         drift.prevSpeed = car.speedKmh
+        drift.collisionAt = nil          -- don't let a pre-run impact void a fresh run
         economyRefreshDriftLeaderboard(zone.name)
       end
       break
@@ -689,10 +694,19 @@ local function updateDriftZones(car, dt)
   local speed = car.speedKmh
   drift.angle = angle
 
-  -- Crash check: a sudden deceleration spike beyond braking = an impact → void run.
-  -- drop uses last frame's speed; (speed + drop) is the pre-impact speed.
+  -- Crash check. Primary signal: ac.onCarCollision fired a real wall/car impact
+  -- (timestamped on drift.collisionAt). Gated by pre-impact speed so a pit-crawl
+  -- nudge doesn't void. Fallback: the old deceleration-spike heuristic, for builds
+  -- where the collision event isn't available.
   local drop = drift.prevSpeed - speed
   drift.prevSpeed = speed
+  if drift.collisionAt and (sessionTime - drift.collisionAt) < 0.25 then
+    drift.collisionAt = nil
+    if (drift.collisionSpeed or 0) > CONFIG.drift.contactMinSpeed then
+      driftCrash()
+      return
+    end
+  end
   if dt > 0 and drop > CONFIG.drift.crashDrop and (drop / dt) > CONFIG.drift.crashDecel
      and (speed + drop) > CONFIG.drift.crashMinSpeed then
     driftCrash()
@@ -733,8 +747,13 @@ local function updateCheckpoints(car, dt)
     local sp = car.speedKmh
     local drop = (run.prevSpeed or sp) - sp
     run.prevSpeed = sp
-    if dt and dt > 0 and drop > CONFIG.drift.crashDrop and (drop / dt) > CONFIG.drift.crashDecel
-       and (sp + drop) > CONFIG.drift.crashMinSpeed then
+    -- ANY contact invalidates. Primary: the real ac.onCarCollision event; fallback:
+    -- the deceleration-spike heuristic (for builds without the collision event).
+    local hitEvent = run.collisionAt and (sessionTime - run.collisionAt) < 0.25
+    if hitEvent then run.collisionAt = nil end
+    if hitEvent
+       or (dt and dt > 0 and drop > CONFIG.drift.crashDrop and (drop / dt) > CONFIG.drift.crashDecel
+           and (sp + drop) > CONFIG.drift.crashMinSpeed) then
       run.valid, run.invalidReason = false, 'contact'                 -- hit something
     else
       -- wheels off the racing surface (native; guarded — skipped if unsupported)
@@ -1318,6 +1337,26 @@ function script.update(dt)
 
   local car = ac.getCar(0)
   if not car then return end
+
+  -- Register the real collision event once. ac.onCarCollision fires exactly when
+  -- our car starts hitting a wall or another car — far more reliable than deriving
+  -- an impact from a single-frame speed drop (AC impacts bounce/scrub across frames
+  -- and hitch dt, so the old heuristic never fired). Guarded: if the API is absent
+  -- on this CSP build the pcall fails and the deceleration heuristic stays as a
+  -- fallback. The handler just timestamps the hit; the drift/hotlap loops consume it.
+  if not drift.collisionHooked then
+    drift.collisionHooked = true
+    pcall(function()
+      ac.onCarCollision(0, function()
+        drift.collisionAt = sessionTime
+        run.collisionAt = sessionTime
+        -- speed AT impact start (a hard crash can zero the car within a frame,
+        -- so capture it here rather than reconstructing it later)
+        local c = ac.getCar(0)
+        drift.collisionSpeed = c and c.speedKmh or 0
+      end)
+    end)
+  end
 
   ensureDisplayName()
   if not missionsLoaded and economyEnabled() then missionsLoaded = true; economyLoadMissions() end
